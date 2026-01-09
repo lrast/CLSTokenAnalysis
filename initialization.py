@@ -1,5 +1,5 @@
 from transformers import AutoImageProcessor, AutoModelForImageClassification, \
-                        DefaultDataCollator, ViTForImageClassification
+                        DefaultDataCollator
 from datasets import load_dataset
 
 
@@ -14,11 +14,11 @@ def setup_model_ds_collator_images(model_id, dataset_id, **kwargs):
         ignore_mismatched_sizes=True
     )
 
-    processor = AutoImageProcessor.from_pretrained(model_id)
+    processor = AutoImageProcessor.from_pretrained(model_id, use_fast=True)
 
     def transform_images(batch):
         inputs = processor([img.convert("RGB") for img in batch["image"]],
-                           return_tensors="pt", use_fast=True)
+                           return_tensors="pt")
         inputs["labels"] = batch["label"]
         return inputs
 
