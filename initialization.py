@@ -5,7 +5,7 @@ from transformers import AutoImageProcessor, AutoModelForImageClassification, \
 from datasets import load_dataset
 
 
-def setup_model_ds_collator_images(model_id, dataset_id, **kwargs):
+def setup_model_ds_collator_images(model_id, dataset_id):
     """ Sets-up the model, dataset, and trainer for an image processing run
     """
     ds = load_dataset(dataset_id)

@@ -28,6 +28,49 @@ def run_across_layers(model, dataset, analysis, layer_template, max_ind,
     return pd.DataFrame(results)
 
 
+# Simultaneous randomization and readout
+def accuracy_post_randomization(model, dataset, layer_template, max_ind,
+                                write_out=True, write_backups=False):
+    """Add a randomization hook to model layers, then evaluate the accuacy of
+    decoders on various layers of the model
+    """
+    all_results = []
+
+    for layer_ind in range(max_ind):
+        layer_name = layer_template.format(ind=layer_ind)
+        print(f'Randomized: {layer_name}')
+        handle = add_randomization_hook(model, layer_name, randomization_mode='shuffle')
+
+        current_results = run_across_layers(model, dataset, linear_probe_by_ridge_regression,
+                                            layer_template, max_ind
+                                            )
+
+        current_results = current_results.rename(columns={'name': 'probed_layer'})
+        current_results['randomized_layer'] = layer_name
+
+        all_results.append(current_results)
+        handle.remove()
+
+        if write_backups:
+            current_results.to_csv(f'intermediate_{layer_name}.csv')
+
+    # This serves as a control on randomization hooks that haven't been removed
+    baseline_results = run_across_layers(model, dataset, linear_probe_by_ridge_regression,
+                                         layer_template, max_ind
+                                         )
+    baseline_results = baseline_results.rename(columns={'name': 'probed_layer'})
+    baseline_results['randomized_layer'] = 'none'
+
+    all_results.append(baseline_results)
+
+    all_results = pd.concat(all_results, ignore_index=True)
+
+    if write_out:
+        all_results.to_csv('randomization_scan.csv')
+
+    return all_results
+
+
 # Layer randomization 
 def accuracy_random_CLS(model, layer_name, dataset, randomization_mode='shuffle'):
     """ Randomize the class tokens in the specified layer, compute accuracy
