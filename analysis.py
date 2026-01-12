@@ -30,7 +30,7 @@ def run_across_layers(model, dataset, analysis, layer_template, max_ind,
 
 # Simultaneous randomization and readout
 def accuracy_post_randomization(model, dataset, layer_template, max_ind,
-                                write_out=True, write_backups=False):
+                                write_out=True, write_backups=False, **probe_kwargs):
     """Add a randomization hook to model layers, then evaluate the accuacy of
     decoders on various layers of the model
     """
@@ -42,7 +42,7 @@ def accuracy_post_randomization(model, dataset, layer_template, max_ind,
         handle = add_randomization_hook(model, layer_name, randomization_mode='shuffle')
 
         current_results = run_across_layers(model, dataset, linear_probe_by_ridge_regression,
-                                            layer_template, max_ind
+                                            layer_template, max_ind, **probe_kwargs
                                             )
 
         current_results = current_results.rename(columns={'name': 'probed_layer'})
