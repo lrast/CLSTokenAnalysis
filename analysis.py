@@ -13,13 +13,16 @@ from sklearn.model_selection import RandomizedSearchCV
 from scipy.stats import expon
 
 
-def run_across_layers(model, dataset, analysis, layer_template, max_ind):
+def run_across_layers(model, dataset, analysis, layer_template, max_ind,
+                      **analysis_kwargs):
     """Runs an analysis for all layers in a model """
     results = []
-
+    print(f'📕 Analysis: {analysis}')
     for layer_ind in range(max_ind):
         layer_name = layer_template.format(ind=layer_ind)
-        stats = analysis(model, layer_name, dataset)
+        print(f'📄 Layer: {layer_name}')
+
+        stats = analysis(model, layer_name, dataset, **analysis_kwargs)
         results.append({'name': layer_name} | stats)
 
     return pd.DataFrame(results)
@@ -38,7 +41,7 @@ def accuracy_random_CLS(model, layer_name, dataset, randomization_mode='shuffle'
     if layer_name is not None:
         handle.remove()
 
-    return {'accuracy': outputs}
+    return {'accuracy': outputs, 'test': 'cls_randomization'}
 
 
 def add_randomization_hook(model, layer_name, randomization_mode='shuffle'):
@@ -66,10 +69,11 @@ def add_randomization_hook(model, layer_name, randomization_mode='shuffle'):
 
 # Layer decoding
 def linear_probe_by_ridge_regression(base_model, layer_name, dataset,
-                                     train_size=250,
+                                     samples_per_label=200,
                                      **embeddingKwargs):
     """Liner probing to assess class identity presence"""
-    embeddingKwargs = {'device': 'mps'} | embeddingKwargs
+
+    embeddingKwargs = {'device': 'mps', 'batch_size': 64} | embeddingKwargs
     embedding_datasets, hook_manager = create_cls_embedding_datasets(
         base_model=base_model,
         dataset_dict=dataset,
@@ -77,13 +81,16 @@ def linear_probe_by_ridge_regression(base_model, layer_name, dataset,
         **embeddingKwargs
     )
 
+    num_train_points = samples_per_label * base_model.num_labels
+    num_batches = num_train_points / embeddingKwargs['batch_size']
+
     def unpack_dataset(dataset):
         images = []
         labels = []
 
         ind = 0
-        for batch in tqdm(iter(dataset), total=min(train_size, len(dataset))):
-            if ind >= train_size:
+        for batch in tqdm(iter(dataset), total=min(num_batches, len(dataset))):
+            if ind >= num_batches:
                 break
             images.append(batch[0].cpu())
             labels.append(batch[1].cpu())
@@ -114,7 +121,8 @@ def linear_probe_by_ridge_regression(base_model, layer_name, dataset,
     best_reg_model.fit(train_embeddings, targets)
 
     return {'accuracy':
-            (best_reg_model.predict(test_embeddings).argmax(1) == test_labels).float().mean().item()
+            (best_reg_model.predict(test_embeddings).argmax(1) == test_labels).float().mean().item(),
+            'test': 'layerwise_probe'
             }
 
 
@@ -140,12 +148,13 @@ def apply_model_decoder(model, layer_name, dataset, **embeddingKwargs):
     with hook_manager:
         stats = classification_stats(decoder, embedding_datasets['test'],
                                      batch_size=None, shuffle=False)
+        stats['test'] = 'layerwise_model_decoder'
 
         return stats
 
 
 def create_cls_embedding_datasets(base_model, dataset_dict, layer_name,
-                                  batch_size=128, seed=42, device=None, **kwargs):
+                                  batch_size=64, seed=42, device=None, **kwargs):
     """Create train/valid/test CLSEmbeddingDataset instances sharing a single hook.
     Args:
         base_model: The base model to attach the hook to

@@ -1,12 +1,20 @@
-import numpy as np
 import evaluate
+import torch
+import numpy as np
 
 from transformers import TrainingArguments, Trainer
 from peft import LoraConfig, get_peft_model
 
+from sklearn.linear_model import Ridge
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.model_selection import RandomizedSearchCV
+from scipy.stats import expon
+
+from tqdm import tqdm
+
 
 def run_probe_training(model, dataset, collator, **kwargs):
-    """Probe trainer"""
+    """Probe trainer by SGD"""
     # Freeze all layers except the classification layer
     for param in model.parameters():
         param.requires_grad = False
@@ -31,6 +39,66 @@ def run_probe_training(model, dataset, collator, **kwargs):
     # Unfreeze all layers
     for param in model.parameters():
         param.requires_grad = True 
+
+    return model
+
+
+def fit_probes_by_ridge_regression(model, train_dataset, collator,
+                                   num_train_points=32000, batch_size=64,
+                                   device='mps',
+                                   **kwargs):
+    """ Use cross-validated ridge regression to fit linear probes
+    Use these weights to initialize the model classifier.
+    """
+    model = model.to('mps').eval()
+
+    # unpack the training data
+    dl = torch.utils.data.DataLoader(train_dataset, shuffle=True,
+                                     batch_size=batch_size)
+
+    num_steps = num_train_points / batch_size
+
+    train_activity = []
+    train_labels = []
+
+    for i, batch in tqdm(enumerate(iter(dl)), total=num_steps,
+                         desc='processing data for probe fit'):
+        labels = batch.pop('labels')
+        inputs = {k: v.to(device) for k, v in batch.items()}
+
+        if i > num_steps:
+            break
+
+        outputs = model.forward(**inputs, output_hidden_states=True)
+
+        train_activity.append(outputs.hidden_states[-1][:, 0, :].detach().cpu())
+        train_labels.append(labels.cpu())
+
+    train_activity = torch.concat(train_activity)
+    train_labels = torch.concat(train_labels)
+
+    # fit SVM model
+    encoder = OneHotEncoder()
+    targets = 2*encoder.fit_transform(train_labels.reshape(-1, 1)).toarray() - 1
+
+    regressor = Ridge()
+    best_reg_model = RandomizedSearchCV(
+                                estimator=regressor, 
+                                param_distributions={'alpha': expon(scale=100)},
+                                n_iter=15,
+                                cv=5, 
+                                scoring='neg_mean_squared_error',
+                                refit=True
+                              )
+
+    best_reg_model.fit(train_activity, targets)
+
+    weights = best_reg_model.best_estimator_.coef_
+    bias = best_reg_model.best_estimator_.intercept_
+
+    with torch.no_grad():
+        model.classifier.weight.copy_(torch.as_tensor(weights))
+        model.classifier.bias.copy_(torch.as_tensor(bias))
 
     return model
 
