@@ -29,8 +29,8 @@ def run_across_layers(model, dataset, analysis, layer_template, max_ind,
 
 
 # Simultaneous randomization and readout
-def accuracy_post_randomization(model, dataset, layer_template, max_ind,
-                                write_out=True, write_backups=False, **probe_kwargs):
+def probe_accuracy_post_randomization(model, dataset, layer_template, max_ind,
+                                      write_out=True, write_backups=False, **probe_kwargs):
     """Add a randomization hook to model layers, then evaluate the accuacy of
     decoders on various layers of the model
     """
@@ -56,7 +56,7 @@ def accuracy_post_randomization(model, dataset, layer_template, max_ind,
 
     # This serves as a control on randomization hooks that haven't been removed
     baseline_results = run_across_layers(model, dataset, linear_probe_by_ridge_regression,
-                                         layer_template, max_ind
+                                         layer_template, max_ind, **probe_kwargs
                                          )
     baseline_results = baseline_results.rename(columns={'name': 'probed_layer'})
     baseline_results['randomized_layer'] = 'none'
@@ -146,7 +146,7 @@ def linear_probe_by_ridge_regression(base_model, layer_name, dataset,
         return images, labels
 
     train_embeddings, train_labels = unpack_dataset(embedding_datasets["train"])
-    test_embeddings, test_labels = unpack_dataset(embedding_datasets["test"])   
+    test_embeddings, test_labels = unpack_dataset(embedding_datasets["test"])
 
     encoder = OneHotEncoder()
     targets = 2*encoder.fit_transform(train_labels.reshape(-1, 1)).toarray() - 1
