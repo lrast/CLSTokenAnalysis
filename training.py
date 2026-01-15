@@ -45,6 +45,7 @@ def run_probe_training(model, dataset, collator, **kwargs):
 
 def fit_probes_by_ridge_regression(model, train_dataset, collator,
                                    num_train_points=32000, batch_size=64,
+                                   shuffle=True,
                                    device='mps',
                                    **kwargs):
     """ Use cross-validated ridge regression to fit linear probes
@@ -53,7 +54,7 @@ def fit_probes_by_ridge_regression(model, train_dataset, collator,
     model = model.to('mps').eval()
 
     # unpack the training data
-    dl = torch.utils.data.DataLoader(train_dataset, shuffle=True,
+    dl = torch.utils.data.DataLoader(train_dataset, shuffle=shuffle,
                                      batch_size=batch_size)
 
     num_steps = num_train_points / batch_size
@@ -63,13 +64,13 @@ def fit_probes_by_ridge_regression(model, train_dataset, collator,
 
     for i, batch in tqdm(enumerate(iter(dl)), total=num_steps,
                          desc='processing data for probe fit'):
-        labels = batch.pop('labels')
-        inputs = {k: v.to(device) for k, v in batch.items()}
+        labels = batch['label']
+        inputs = batch['input'].to(device)
 
         if i > num_steps:
             break
 
-        outputs = model.forward(**inputs, output_hidden_states=True)
+        outputs = model.forward(inputs, output_hidden_states=True)
 
         train_activity.append(outputs.hidden_states[-1][:, 0, :].detach().cpu())
         train_labels.append(labels.cpu())
