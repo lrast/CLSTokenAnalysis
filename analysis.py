@@ -19,7 +19,7 @@ def run_across_layers(model, dataset, analysis, layers, **analysis_kwargs):
         print(f'📄 Layer: {layer_name}')
 
         stats = analysis(model, layer_name, dataset, **analysis_kwargs)
-        results.append({'name': layer_name} | stats)
+        results.append({'layer': layer_name} | stats)
 
     return pd.DataFrame(results)
 
@@ -190,6 +190,7 @@ def classification_stats(model, dataset, device=None, **evalkwargs):
 
 
 # Previous analysis: simultaneous randomization and readout
+# This function need to be rewritten to account for better data creation.
 def probe_accuracy_post_randomization(model, dataset, layer_template, max_ind,
                                       write_out=True, write_backups=False, **probe_kwargs):
     """Add a randomization hook to model layers, then evaluate the accuacy of
