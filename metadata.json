@@ -1,0 +1,28 @@
+{
+  "model": {
+    "google/vit-base-patch16-224": {"input_type": "image",
+                                    "template": "vit.encoder.layer.{ind}",
+                                    "max_ind": 12},
+    "facebook/dinov2-base": {"input_type": "image",
+                             "template": "dinov2.encoder.layer.{ind}",
+                             "max_ind": 12},
+    "openai/clip-vit-base-patch32": {"input_type": "image",
+                                     "template": "vision_model.encoder.layers.{ind}",
+                                     "max_ind": 12},
+    "google-bert/bert-base-uncased": {"input_type": "text",
+                                      "template": "model.bert.encoder.layer.{ind}",
+                                      "max_ind": 12},
+    "FacebookAI/roberta-large": {"input_type": "text",
+                                 "template": "roberta.encoder.layer.{ind}", 
+                                 "max_ind": 24},
+    "microsoft/deberta-v3-base": {"input_type": "text",
+                                  "template": "deberta.encoder.layer.{ind}",
+                                  "max_ind": 12}
+  },
+  "dataset": {
+    "ILSVRC/imagenet-1k": {"num_classes": 1000, "splits": ["train", "validation"]},
+    "zh-plus/tiny-imagenet": {"num_classes": 200}
+  }
+
+
+}

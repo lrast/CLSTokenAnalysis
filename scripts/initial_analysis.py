@@ -17,7 +17,7 @@ from pathlib import Path
 # Starting with configurations stored locally
 default_config = {
     "model_name": 'google/vit-base-patch16-224',
-    "dataset_name": 'zh-plus/tiny-imagenet',
+    "dataset_name": "ILSVRC/imagenet-1k",
     "run_model_decoder": False,
     "output_name": 'results.csv',
     "analysis_params": {"device": 'mps'},
@@ -42,24 +42,18 @@ def probe_characterization(cfg: DictConfig):
 
     match model_cfg['input_type']:
         case 'image':
-            model, dataset, collator = image_model_setup(cfg.model_name,
-                                                         cfg.dataset_name,
-                                                         num_classes=num_classes,
-                                                         seed=cfg.seed,
-                                                         # debug
-                                                         on_disk=True
-                                                         )
+            model, dataset, collator = \
+                image_model_setup(cfg.model_name, cfg.dataset_name,
+                                  num_classes=num_classes, samples_per_class=200,
+                                  seed=cfg.seed, splits=dataset_cfg['splits']
+                                  )
 
     layers_to_track = [model_cfg['template'].format(ind=i)
                        for i in range(model_cfg['max_ind'])]
 
-    # shuffle the dataset?
-    # test closeness to uniform label distribution
-
-
-    # debug:
-    dataset['test'] = dataset['valid']
-
+    # standardized split names: the second split is used as the 'test' split
+    if 'test' not in dataset_cfg['splits']:
+        dataset['test'] = dataset.pop(dataset_cfg['splits'][1])
 
     # probe setup
     print('Fitting probes')

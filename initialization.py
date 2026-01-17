@@ -22,13 +22,8 @@ def image_model_setup(model_id, dataset_id, num_classes, samples_per_class=200,
     ds = load_dataset(dataset_id, streaming=True)
 
     if samples_per_class is not None:
-        ds_sample = DatasetDict()
-
-        for split in splits:
-            ds_sample[split] = stratified_image_subset(ds[split], num_classes,
-                                                       samples_per_class)
-
-        ds = ds_sample
+        ds = stratified_image_subset(ds, num_classes, samples_per_class=samples_per_class,
+                                     splits=splits)
 
     model = AutoModelForImageClassification.from_pretrained(
         model_id, num_labels=num_classes, ignore_mismatched_sizes=True
@@ -58,42 +53,56 @@ def transform_images(batch, processor=None, output_name="input"):
     return outputs
 
 
-def stratified_image_subset(dataset, num_classes, samples_per_class=200):
+def stratified_image_subset(dataset_dict, num_classes, samples_per_class=200,
+                            splits=['train', 'test'], stream_from_disk=True):
     """Stratified sub-sampling of the dataset to, producing a class-balanced
-    split. This is the subsample that we need for most analyses. 
-    """
-    dataset = dataset.cast_column("image", Image(decode=False))
+    split. This is the subsample that we need for most analyses.
 
-    def generate_samples():
+    stream_from_disk: useful if later preprocessing steps are memory intensive
+    """
+    dataset_dict = dataset_dict.cast_column("image", Image(decode=False))
+
+    def generate_samples(split=None):
+        local_dataset = dataset_dict[split]
+
         remaining = {i: samples_per_class for i in range(num_classes)}
         total_to_find = num_classes * samples_per_class
         count_found = 0
 
-        for batch in dataset:
+        for batch in local_dataset:
             if count_found == total_to_find:
                 break
 
             label = batch['label']
+
+            if (count_found == 0) and (label not in remaining):
+                # fail loundly if the first label is unknown
+                raise ValueError('Unknown label value')
+
             if label in remaining:
                 count_found += 1
 
                 remaining[label] -= 1
-
                 if remaining[label] == 0:
                     # remove it from the dict
                     del remaining[label]
 
                 yield batch
 
-    # write the results to a dataset
-    data_subset = Dataset.from_generator(generate_samples, keep_in_memory=True)
-    data_subset = data_subset.cast_column("image", Image(decode=True))
+    base_dir = Path('temp_dataset_subsample')
+    for split in splits:
+        # write the results to a dataset
+        data_subset = Dataset.from_generator(generate_samples, keep_in_memory=True,
+                                             gen_kwargs={'split': split},split=split)
+        data_subset = data_subset.cast_column("image", Image(decode=True))
 
-    return data_subset
+        data_subset.save_to_disk(base_dir / split)
+
+    return load_dataset('arrow', data_dir=base_dir, streaming=True)
 
 
 def generate_activity_dataset(model, dataset_dict, layer_names, num_samples, 
-                              dataset_keys=['train', 'test'],
+                              splits=['train', 'test'],
                               data_dir='tmp_activity',
                               device=None, shuffle=True, seed=42, batch_size=64):
     """Generates a huggingface dataset on disk containing the CLS token activity
@@ -115,7 +124,7 @@ def generate_activity_dataset(model, dataset_dict, layer_names, num_samples,
     activity_ds = DatasetDict({})
 
     with tempfile.TemporaryDirectory() as tmpdir, torch.no_grad():
-        for split in dataset_keys:
+        for split in splits:
             dl = make_dl(split)
             data_file = Path(tmpdir) / f'data.arrow_{split}'
 
