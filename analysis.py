@@ -65,7 +65,7 @@ def add_randomization_hook(model, layer_name, randomization_mode='shuffle'):
 
 
 # Layer decoding
-def linear_probe_by_ridge_regression(activity_dataset, num_labels, cvfold=0, alpha=1.0):
+def linear_probe_by_ridge_regression(activity_dataset, cvfold=0, alpha=1.0):
     """
     Uses linear probing to assess class identity presence in the named layers
     - activity_dataset: a datase of layer-wise activity and labels

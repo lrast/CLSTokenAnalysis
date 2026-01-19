@@ -10,8 +10,6 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import RandomizedSearchCV
 from scipy.stats import expon
 
-from tqdm import tqdm
-
 
 def run_probe_training(model, dataset, collator, **kwargs):
     """Probe trainer by SGD"""
@@ -43,40 +41,16 @@ def run_probe_training(model, dataset, collator, **kwargs):
     return model
 
 
-def fit_probes_by_ridge_regression(model, train_dataset, collator,
-                                   num_train_points=32000, batch_size=64,
-                                   shuffle=True,
-                                   device='mps',
-                                   **kwargs):
+def fit_probes_by_ridge_regression(model, activity_dataset, **kwargs):
     """ Use cross-validated ridge regression to fit linear probes
     Use these weights to initialize the model classifier.
+
+    activity_dataset: dataset of internal activity created by generate_activity_dataset
     """
-    model = model.to('mps').eval()
+    activity_dataset.set_format('pt')
 
-    # unpack the training data
-    dl = torch.utils.data.DataLoader(train_dataset, shuffle=shuffle,
-                                     batch_size=batch_size)
-
-    num_steps = num_train_points / batch_size
-
-    train_activity = []
-    train_labels = []
-
-    for i, batch in tqdm(enumerate(iter(dl)), total=num_steps,
-                         desc='processing data for probe fit'):
-        labels = batch['label']
-        inputs = batch['input'].to(device)
-
-        if i > num_steps:
-            break
-
-        outputs = model.forward(inputs, output_hidden_states=True)
-
-        train_activity.append(outputs.hidden_states[-1][:, 0, :].detach().cpu())
-        train_labels.append(labels.cpu())
-
-    train_activity = torch.concat(train_activity)
-    train_labels = torch.concat(train_labels)
+    train_activity = activity_dataset['train'][:]['classifier_inputs']
+    train_labels = activity_dataset['train'][:]['label']
 
     # fit SVM model
     encoder = OneHotEncoder()
