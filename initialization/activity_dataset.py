@@ -66,7 +66,16 @@ class ActivityRecorder:
             self.hook_handles[layer_name] = hook
 
         if include_classifier_inputs:
-            hook = module_dict['classifier'].register_forward_hook(
+            if 'classifier' in module_dict:
+                classifier_name = 'classifier'
+            elif 'cls_classifier' in module_dict:
+                classifier_name = 'cls_classifier'
+            elif 'timm_model.head' in module_dict:
+                classifier_name = 'timm_model.head'
+            else:
+                raise ValueError('Unknown classifier')
+
+            hook = module_dict[classifier_name].register_forward_hook(
                                     self.create_input_hook('classifier_inputs')
                                     )
             self.hook_handles['classifier_inputs'] = hook
@@ -74,6 +83,10 @@ class ActivityRecorder:
 
     def create_output_hook(self, name):
         def recording_hook(module, input, output):
+            if isinstance(output, tuple):
+                # not sure about the rhyme or reason when this is tuple vs tensor
+                output = output[0]
+
             self.CLS_tokens[name] = output[:, 0, :].detach().clone().cpu()
 
         return recording_hook

@@ -48,15 +48,24 @@ def add_randomization_hook(model, layer_name, randomization_mode='shuffle'):
     module = module_dict[layer_name]
 
     def randomization_hook(module, input, output):
-        copied_output = output.clone()
+        # another special case for tuple vs tensor
+        is_tuple = isinstance(output, tuple)
+        if is_tuple:
+            copied_output = output[0].clone()
+        else:
+            copied_output = output.clone()
+
         batch, tokens, dims = copied_output.shape
-        
+
         if randomization_mode == 'shuffle':
             ind_perm = torch.randperm(batch)
             copied_output[:, 0, :] = copied_output[ind_perm, 0, :]
         elif randomization_mode == 'normal':
             # default to normal
             copied_output[:, 0, :] = torch.randn(batch, dims)
+
+        if is_tuple:
+            return (copied_output,)
 
         return copied_output
 

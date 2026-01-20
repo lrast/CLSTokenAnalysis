@@ -9,6 +9,14 @@
     "openai/clip-vit-base-patch32": {"input_type": "image",
                                      "template": "vision_model.encoder.layers.{ind}",
                                      "max_ind": 12},
+    "facebook/deit-base-distilled-patch16-224": {"input_type": "image",
+                                                 "template": "deit.encoder.layer.{ind}",
+                                                 "max_ind": 12
+                                               },
+    "timm/vit_large_patch16_224.mae": {"input_type": "image",
+                              "template": "timm_model.blocks.{ind}",
+                               "max_ind": 12},
+
     "google-bert/bert-base-uncased": {"input_type": "text",
                                       "template": "model.bert.encoder.layer.{ind}",
                                       "max_ind": 12},

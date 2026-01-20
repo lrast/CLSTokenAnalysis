@@ -72,8 +72,14 @@ def fit_probes_by_ridge_regression(model, activity_dataset, **kwargs):
     bias = best_reg_model.best_estimator_.intercept_
 
     with torch.no_grad():
-        model.classifier.weight.copy_(torch.as_tensor(weights))
-        model.classifier.bias.copy_(torch.as_tensor(bias))
+        modules = {k: v for k, v in model.named_modules()}
+
+        if 'classifier' in modules:
+            model.classifier.weight.copy_(torch.as_tensor(weights))
+            model.classifier.bias.copy_(torch.as_tensor(bias))
+        elif 'cls_classifier' in modules:
+            model.cls_classifier.weight.copy_(torch.as_tensor(weights))
+            model.cls_classifier.bias.copy_(torch.as_tensor(bias))
 
     return model
 
