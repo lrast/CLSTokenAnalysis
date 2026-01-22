@@ -5,8 +5,8 @@ from datasets import Dataset, DatasetDict, load_from_disk
 from torch.utils.data import DataLoader
 
 
-def generate_activity_dataset(model, dataset_dict, layer_names,
-                              splits=['train', 'test'], output_dir='temp_activity_dataset',
+def generate_activity_dataset(model_wrapper, dataset_dict, splits=['train', 'test'],
+                              output_dir='temp_activity_dataset',
                               include_classifier_inputs=True,
                               batch_size=64, device=None, shuffle=False, seed=42):
     """Generates a huggingface dataset on disk containing the CLS token activity
@@ -16,9 +16,9 @@ def generate_activity_dataset(model, dataset_dict, layer_names,
     output probing
     """
     if device:
-        model = model.to(device)
+        model = model_wrapper.model.to(device)
 
-    recorder = ActivityRecorder(model, layer_names, include_classifier_inputs)
+    recorder = ActivityRecorder(model_wrapper, include_classifier_inputs)
 
     def activity_generator(split):
         ds = dataset_dict[split]
@@ -52,31 +52,23 @@ def generate_activity_dataset(model, dataset_dict, layer_names,
 
 
 class ActivityRecorder:
-    """Manages a single forward hook shared across multiple datasets"""
-    def __init__(self, base_model, layer_names, include_classifier_inputs=True):
-        module_dict = {k: v for k, v in base_model.named_modules()}
+    """Records activity across the model"""
+    def __init__(self, model_wrapper, include_classifier_inputs=True):
 
-        self.CLS_tokens = {name: None for name in layer_names}
-        self.hook_handles = {name: None for name in layer_names}
+        self.CLS_tokens = {}
+        self.hook_handles = {}
 
-        for layer_name in layer_names:
-            hook = module_dict[layer_name].register_forward_hook(
+        for layer_name, module in model_wrapper.module_generator():
+            hook = module.register_forward_hook(
                                                 self.create_output_hook(layer_name)
                                             )
             self.hook_handles[layer_name] = hook
+            self.CLS_tokens[layer_name] = None
 
         if include_classifier_inputs:
-            if 'classifier' in module_dict:
-                classifier_name = 'classifier'
-            elif 'cls_classifier' in module_dict:
-                classifier_name = 'cls_classifier'
-            elif 'timm_model.head' in module_dict:
-                classifier_name = 'timm_model.head'
-            else:
-                raise ValueError('Unknown classifier')
-
-            hook = module_dict[classifier_name].register_forward_hook(
-                                    self.create_input_hook('classifier_inputs')
+            classifier_module = model_wrapper.get_classifier_module()
+            hook = classifier_module .register_forward_hook(
+                                        self.create_input_hook('classifier_inputs')
                                     )
             self.hook_handles['classifier_inputs'] = hook
             self.CLS_tokens['classifier_inputs'] = None
@@ -84,7 +76,7 @@ class ActivityRecorder:
     def create_output_hook(self, name):
         def recording_hook(module, input, output):
             if isinstance(output, tuple):
-                # not sure about the rhyme or reason when this is tuple vs tensor
+                # this can be tensor or tuple
                 output = output[0]
 
             self.CLS_tokens[name] = output[:, 0, :].detach().clone().cpu()

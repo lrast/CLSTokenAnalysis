@@ -1,36 +1,38 @@
-{
-  "model": {
-    "google/vit-base-patch16-224": {"input_type": "image",
+{"model": {
+    "google/vit-base-patch16-224": {
                                     "template": "vit.encoder.layer.{ind}",
                                     "max_ind": 12},
-    "facebook/dinov2-base": {"input_type": "image",
+    "facebook/dinov2-base": {
                              "template": "dinov2.encoder.layer.{ind}",
-                             "max_ind": 12},
-    "openai/clip-vit-base-patch32": {"input_type": "image",
+                             "max_ind": 12
+                           },
+    "openai/clip-vit-base-patch32": {
                                      "template": "vision_model.encoder.layers.{ind}",
                                      "max_ind": 12},
-    "facebook/deit-base-distilled-patch16-224": {"input_type": "image",
+    "facebook/deit-base-distilled-patch16-224": {
                                                  "template": "deit.encoder.layer.{ind}",
-                                                 "max_ind": 12
+                                                 "max_ind": 12,
+                                                 "classifier_name": "cls_classifier"
                                                },
-    "timm/vit_large_patch16_224.mae": {"input_type": "image",
-                              "template": "timm_model.blocks.{ind}",
-                               "max_ind": 12},
+    "microsoft/beit-base-patch16-224-pt22k-ft22k": {
+                                            "template": "beit.encoder.layer.{ind}",
+                                             "max_ind": 12}
 
-    "google-bert/bert-base-uncased": {"input_type": "text",
-                                      "template": "model.bert.encoder.layer.{ind}",
-                                      "max_ind": 12},
-    "FacebookAI/roberta-large": {"input_type": "text",
-                                 "template": "roberta.encoder.layer.{ind}", 
-                                 "max_ind": 24},
-    "microsoft/deberta-v3-base": {"input_type": "text",
-                                  "template": "deberta.encoder.layer.{ind}",
-                                  "max_ind": 12}
   },
   "dataset": {
     "ILSVRC/imagenet-1k": {"num_classes": 1000, "splits": ["train", "validation"]},
     "zh-plus/tiny-imagenet": {"num_classes": 200}
-  }
+  },
 
+  "unused": {
+    "google-bert/bert-base-uncased": {
+                                      "template": "model.bert.encoder.layer.{ind}",
+                                      "max_ind": 12},
+    "FacebookAI/roberta-large": {
+                                 "template": "roberta.encoder.layer.{ind}", 
+                                 "max_ind": 24},
+    "microsoft/deberta-v3-base": {
+                                  "template": "deberta.encoder.layer.{ind}",
+                                  "max_ind": 12}}
 
 }

@@ -41,7 +41,7 @@ def run_probe_training(model, dataset, collator, **kwargs):
     return model
 
 
-def fit_probes_by_ridge_regression(model, activity_dataset, **kwargs):
+def fit_probes_by_ridge_regression(model_wrapper, activity_dataset, **kwargs):
     """ Use cross-validated ridge regression to fit linear probes
     Use these weights to initialize the model classifier.
 
@@ -72,16 +72,11 @@ def fit_probes_by_ridge_regression(model, activity_dataset, **kwargs):
     bias = best_reg_model.best_estimator_.intercept_
 
     with torch.no_grad():
-        modules = {k: v for k, v in model.named_modules()}
+        classifier_module = model_wrapper.get_classifier_module()
+        classifier_module.weight.copy_(torch.as_tensor(weights))
+        classifier_module.bias.copy_(torch.as_tensor(bias))
 
-        if 'classifier' in modules:
-            model.classifier.weight.copy_(torch.as_tensor(weights))
-            model.classifier.bias.copy_(torch.as_tensor(bias))
-        elif 'cls_classifier' in modules:
-            model.cls_classifier.weight.copy_(torch.as_tensor(weights))
-            model.cls_classifier.bias.copy_(torch.as_tensor(bias))
-
-    return model
+    return model_wrapper
 
 
 def run_full_training(model, dataset, collator, **kwargs):
@@ -152,7 +147,7 @@ def train_model(model, dataset, collator, **kwargs):
         return accuracy.compute(predictions=predictions, references=labels)
 
     training_args = TrainingArguments(
-                        label_names=["labels"], # for LoRA
+                        label_names=["label"],
                         remove_unused_columns=False, # for lazy preprocessing
                         load_best_model_at_end=True,
                         metric_for_best_model="accuracy",

@@ -11,14 +11,16 @@ from sklearn.model_selection import RandomizedSearchCV
 from scipy.stats import expon
 
 
-def run_across_layers(model, dataset, analysis, layers, **analysis_kwargs):
+def run_across_layers(model_wrapper, dataset, analysis, **analysis_kwargs):
     """Runs an analysis for all layers in a model """
     results = []
     print(f'📕 Analysis: {analysis}')
+
+    layers = model_wrapper.layers
     for layer_name in layers:
         print(f'📄 Layer: {layer_name}')
 
-        stats = analysis(model, layer_name, dataset, **analysis_kwargs)
+        stats = analysis(model_wrapper.model, layer_name, dataset, **analysis_kwargs)
         results.append({'layer': layer_name} | stats)
 
     return pd.DataFrame(results)
@@ -117,12 +119,12 @@ def linear_probe_by_ridge_regression(activity_dataset, cvfold=0, alpha=1.0):
     return pd.DataFrame(results)
 
 
-def apply_model_decoder(model, activity_dataset, **evalkwargs):
+def apply_model_decoder(model_wrapper, activity_dataset, **evalkwargs):
     """ Uses the model's classifier to decode CLS tokens in given layer,
     Measuring accuracy and identifiability metrics
     """
     activity_dataset.set_format('pt')
-    decoder = model.classifier
+    decoder = model_wrapper.get_classifier_module()
 
     results = []
     for layer_name in activity_dataset['test'].column_names:
@@ -158,7 +160,7 @@ def model_accuracy(model, dataset, device='mps', **evalkwargs):
             labels = batch['label']
             inputs = batch['input'].to(device)
 
-            preds = model.forward(inputs).logits.argmax(1).cpu()
+            preds = model(inputs).logits.argmax(1).cpu()
             outputs.append(preds.cpu() == labels)
 
     return torch.concat(outputs).float().mean().item()
@@ -181,7 +183,7 @@ def classification_stats(model, dataset, device=None, **evalkwargs):
     with torch.no_grad():
         for batch in iter(dl):
             images, labels = batch
-            logits = model.forward(images.to(device)).cpu()
+            logits = model(images.to(device)).cpu()
             labels = labels.cpu()
 
             # where are the correct answers?

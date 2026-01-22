@@ -24,15 +24,10 @@ def probe_characterization(model_name, dataset_name, num_classes,
     """
     model, image_datasets, _ = image_model_setup(model_name, dataset_name, num_classes)
 
-    # unpack metadata
-    model_details = metadata['model'][model_name]
-
-    layers = [model_details["template"].format(ind=i)
-              for i in range(model_details["max_ind"])]
     splits = list(image_datasets.keys())
 
     # generated activity data
-    activity_dataset = generate_activity_dataset(model, image_datasets, layers,
+    activity_dataset = generate_activity_dataset(model, image_datasets,
                                                  splits=splits,
                                                  include_classifier_inputs=True,
                                                  output_dir='temp_activity_dataset',
@@ -58,8 +53,7 @@ def probe_characterization(model_name, dataset_name, num_classes,
         print('decoder: ', decoder_results)
 
     randomization_results = run_across_layers(model, image_datasets,
-                                              accuracy_random_CLS,
-                                              layers, shuffle=None,
+                                              accuracy_random_CLS,  shuffle=None,
                                               device=device)
     all_results.append(randomization_results)
 
