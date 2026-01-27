@@ -8,7 +8,8 @@ from torch.utils.data import DataLoader
 def generate_activity_dataset(model_wrapper, dataset_dict, splits=['train', 'test'],
                               output_dir='temp_activity_dataset',
                               include_classifier_inputs=True,
-                              batch_size=64, device=None, shuffle=False, seed=42):
+                              batch_size=64, device=None, shuffle=False, seed=42,
+                              ):
     """Generates a huggingface dataset on disk containing the CLS token activity
     at specified layers
 
@@ -54,7 +55,6 @@ def generate_activity_dataset(model_wrapper, dataset_dict, splits=['train', 'tes
 class ActivityRecorder:
     """Records activity across the model"""
     def __init__(self, model_wrapper, include_classifier_inputs=True):
-
         self.CLS_tokens = {}
         self.hook_handles = {}
 

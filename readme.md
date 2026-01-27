@@ -4,4 +4,4 @@ This work is motivated by an observation in my Test-Time-Training experiments: i
 
 
 ## Part 1:
-Decodable vs cauasal information in the CLS tokens of ViTs https://lrast.github.io/science/2026/01/20/lab_notes.html
+Decodable vs causal information in the CLS tokens of ViTs https://lrast.github.io/science/2026/01/20/lab_notes.html

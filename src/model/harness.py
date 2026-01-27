@@ -1,46 +1,13 @@
+# model wrapper class for generalizable evaluations
+from transformers import AutoModelForImageClassification, ViTForImageClassification
+
+import torch
 import json
-
-from transformers import AutoImageProcessor, AutoModelForImageClassification, \
-                         DefaultDataCollator, ViTForImageClassification
-
-from datasets import load_dataset
-
-
-def image_model_setup(model_id, dataset_id, num_classes):
-    """ Sets-up the model, dataset, and trainer for an image processing run
-    """
-    ds = load_dataset(dataset_id, streaming=True)
-
-    model = ModelWrapper(model_id, num_classes)
-
-    processor = AutoImageProcessor.from_pretrained(model_id, use_fast=True)
-    data_collator = DefaultDataCollator()
-
-    ds = ds.map(
-                transform_images, 
-                batched=True, 
-                fn_kwargs={"processor": processor, "output_name": "input"},
-                remove_columns=["image"]
-                )
-
-    return model, ds, data_collator
-
-
-# general picklable transformations
-def transform_images(batch, processor=None, output_name="input"):
-    """General parallalizable image transform"""
-    outputs = processor([img.convert("RGB") for img in batch["image"]],
-                        return_tensors='pt')
-    outputs[output_name] = outputs.pop('pixel_values') 
-    if 'labels' in outputs:
-        outputs['label'] = outputs.pop('labels')
-
-    return outputs
 
 
 class ModelWrapper():
     """ Wrapper around models to handle all edge cases and provide a 
-    standardized interface. Analyses should take a ModelWrapper
+    standardized interface. Analyses should take a ModelWrapper.
     """
     def __init__(self, model_id, num_classes):
         # model setup 
@@ -79,8 +46,73 @@ class ModelWrapper():
     def get_classifier_module(self):
         return self.module_dict[self.CLS_classifier_name]
 
+    def add_internal_readouts(self, inds, readout_functions=None, randomizers=None):
+        """ Initialize readout functions, hooks and trackers for multiple
+        radouts
+
+        readout_functions, randomizers: dictionaries indexed by layer namess
+        """
+        tracked_layers = [self.layers[i] for i in inds]
+        readout_functions = readout_functions or {layer: lambda x: x
+                                                  for layer in tracked_layers}
+        randomizers = randomizers or {layer: None for layer in tracked_layers}
+
+        # create dictionary to track outputs
+        self.cached_activity = {layer: None for layer in tracked_layers}
+
+        # initialize hooks
+        handles = []
+        for layer in tracked_layers:
+            handles.append(self.add_activity_hook(layer, readout_functions[layer],
+                                                  randomizers[layer]
+                                                  ))
+
+        return HookContext(handles)
+
+    def add_activity_hook(self, name, readout, randomizer):
+        """Hook that applys readout to activity and records the result
+        """
+        def record_readout_and_randomize(module, input, outputs):
+            tuple_outs = isinstance(outputs, tuple)
+            if tuple_outs:
+                outputs = outputs[0]
+
+            outputs = outputs.detach().clone()
+
+            # record readouts
+            cls_tokens = outputs[:, 0, :].cpu()
+            with torch.no_grad():
+                self.cached_activity[name] = readout(cls_tokens).cpu()
+
+            if randomizer is None:
+                to_return = outputs
+            else:
+                to_return = randomizer(outputs)
+
+            if tuple_outs:
+                return (to_return,)
+            return to_return
+
+        hook_handle = self.module_dict[name].register_forward_hook(
+                                                    record_readout_and_randomize
+                                                )
+
+        return hook_handle
+
+    def get_batch_readout(self):
+        """ Returns batch read-outs and resets the tracker for safety
+        """
+        outputs = self.cached_activity.copy()
+
+        for layer in self.cached_activity.keys():
+            self.cached_activity[layer] = None
+
+        return outputs
+
     def zero_out_auxiliary_outputs(self):
-        """Handle zeroing out non-CLS inputs in a model dependent way"""
+        """Handle zeroing out non-CLS inputs to the final output layer in
+        a model dependent way
+        """
         if self.model_id == "facebook/dinov2-base":
             # dinov2 appends the CLS tokens and mean outputs as inputs to the classifier
             # The right approach in this case is to zero-out, fit probe, test
@@ -106,15 +138,20 @@ class ModelWrapper():
 
         return HookContext(hook_handle)
 
+    def to(self, device):
+        """Moves model to the specified device"""
+        self.model = self.model.to(device)
+
 
 class HookContext:
     """ Context that clears hook when it is done """
-    def __init__(self, hook_handle):
-        self.hook_handle = hook_handle
+    def __init__(self, *hook_handles):
+        self.hook_handles = hook_handles
 
     def cleanup(self):
         """Explicitly remove the hook. Should be called when done."""
-        self.hook_handle.remove()
+        for handle in self.hook_handles:
+            handle.remove()
 
     def __enter__(self):
         """Context manager entry"""
@@ -122,9 +159,18 @@ class HookContext:
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - cleanup the hook"""
-        self.hook_handle.remove()
+        self.cleanup()
         return False
 
     def __del__(self):
         """Cleanup the hook as fallback"""
         self.cleanup()
+
+
+# utilities for modelling
+def shuffle_randomizer(batch):
+    """CLS randomization by shuffling within batch"""
+    ind_perm = torch.randperm(batch.shape[0])
+    batch[:, 0, :] = batch[ind_perm, 0, :]
+
+    return batch
