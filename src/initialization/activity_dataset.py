@@ -1,8 +1,31 @@
 # Generate activity datasets for as sepcified model and dataset
 import torch
-from datasets import Dataset, DatasetDict, load_from_disk
 
+from datasets import Dataset, IterableDataset, DatasetDict, load_from_disk
 from torch.utils.data import DataLoader
+
+from src.utilities import HookContext
+from pathlib import Path
+
+
+def activity_generator(model=None, datasplit=None, recorder=None, batch_size=64):
+    """Activity generator: iterates through the dataset yields recorded values
+    """
+    dl = DataLoader(datasplit, batch_size=batch_size,
+                    num_workers=min(4, datasplit.num_shards))
+
+    with torch.no_grad():
+        for batch in dl:
+            labels = batch['label']
+            inputs = batch['input'].to(model.device)
+
+            _ = model(inputs)
+            activity = recorder.pop()
+            activity['label'] = labels.clone()
+
+            keys = activity.keys()
+            for values in zip(*activity.values()):
+                yield dict(zip(keys, values))
 
 
 def generate_activity_dataset(model_wrapper, dataset_dict, splits=['train', 'test'],
@@ -16,47 +39,35 @@ def generate_activity_dataset(model_wrapper, dataset_dict, splits=['train', 'tes
     include_classifier_inputs: records the input values to the classifier for
     output probing
     """
-    if device:
-        model = model_wrapper.model.to(device)
-
+    model = model_wrapper.model.to(device)
     recorder = ActivityRecorder(model_wrapper, include_classifier_inputs)
 
-    def activity_generator(split):
-        ds = dataset_dict[split]
-        dl = DataLoader(ds, batch_size=batch_size, num_workers=min(4, ds.num_shards))
-
-        with torch.no_grad():
-            for batch in dl:
-                labels = batch['label']
-                inputs = batch['input'].to(model.device)
-
-                _ = model(inputs)
-                activity = recorder.CLS_tokens.copy()
-                activity['label'] = labels.clone()
-
-                keys = activity.keys()
-                for values in zip(*activity.values()):
-                    yield dict(zip(keys, values))
-
     full_dataset = DatasetDict()
-    for i, split in enumerate(splits):
-        # write the results to a dataset
-        data_subset = Dataset.from_generator(activity_generator, keep_in_memory=True,
-                                             gen_kwargs={'split': split}, split=split)
+    with recorder:
+        for i, split in enumerate(splits):
+            # write the results to a dataset
+            datasplit = dataset_dict[split]
+            data_subset = Dataset.from_generator(activity_generator, keep_in_memory=True,
+                                                 gen_kwargs={'model': model,
+                                                             'datasplit': datasplit,
+                                                             'recorder': recorder,
+                                                             'batch_size': batch_size
+                                                             },
+                                                 split=split)
 
-        data_subset = data_subset.shuffle(seed=seed)
-        full_dataset[split] = data_subset
+            data_subset = data_subset.shuffle(seed=seed)
+            full_dataset[split] = data_subset
 
     full_dataset.save_to_disk(output_dir)
 
     return load_from_disk(output_dir)
 
 
-class ActivityRecorder:
+class ActivityRecorder(HookContext):
     """Records activity across the model"""
     def __init__(self, model_wrapper, include_classifier_inputs=True):
+        super().__init__(hook_handles={})
         self.CLS_tokens = {}
-        self.hook_handles = {}
 
         for layer_name, module in model_wrapper.module_generator():
             hook = module.register_forward_hook(
@@ -89,26 +100,112 @@ class ActivityRecorder:
 
         return recording_hook
 
-    def __enter__(self):
-        """Context manager entry"""
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - cleanup the hook"""
-        self.cleanup()
-        return False  # Don't suppress exceptions
+    def pop(self):
+        """Return CLS_tokens, set local versions to None"""
+        outputs = self.CLS_tokens.copy()
 
-    def reset(self):
         for key in self.CLS_tokens:
             self.CLS_tokens[key] = None
 
-    def cleanup(self):
-        """Explicitly remove the hook. Should be called when done."""
-        for name, handle in self.hook_handles.items():
-            handle.remove()
-            self.hook_handles[name] = None
-        self.reset()
+        return outputs
 
-    def __del__(self):
-        """Cleanup the hook as fallback"""
-        self.cleanup()
+
+def generate_layer_input_datase(model_wrapper, layer_name, dataset_dict,
+                                splits=['train', 'test'],
+                                output_dir='temp_full_activity_dataset',
+                                batch_size=64, device=None, shuffle=False,
+                                seed=42):
+    """Makes a dataset of all token activity for a single layer
+    """
+    model = model_wrapper.model.to(device)
+    recorder = LayerInputHooks(model_wrapper, layer_name)
+
+    with recorder:
+        for i, split in enumerate(splits):
+            # write the results to a dataset
+            datasplit = dataset_dict[split]
+            data_subset = Dataset.from_generator(activity_generator, keep_in_memory=True,
+                                                 gen_kwargs={'model': model,
+                                                             'datasplit': datasplit,
+                                                             'recorder': recorder,
+                                                             'batch_size': batch_size
+                                                             },
+                                                 split=split)
+
+            data_subset = data_subset.shuffle(seed=seed)
+            data_subset.save_to_disk(Path(output_dir) / split)
+
+    return load_from_disk(output_dir)
+
+
+class OnlineLayerInputDataset(IterableDataset):
+    """
+    Iterable dataset that yields (input_activities, targets) from a model layer,
+    computed on the fly rather than stored to disk.
+    """
+    def __init__(self, model_wrapper, layer_name, datasplit, batch_size=64,
+                 device=None):
+        self.model_wrapper = model_wrapper
+        self.layer_name = layer_name
+        self.datasplit = datasplit
+        self.batch_size = batch_size
+        self.device = device
+
+        self.model = model_wrapper.model.to(device)
+
+    def __iter__(self):
+        dataloader = torch.utils.data.DataLoader(
+            self.datasplit,
+            batch_size=self.batch_size,
+            shuffle=False,
+            collate_fn=getattr(self.datasplit, 'collate_fn', None)
+        )
+        recorder = LayerInputHooks(self.model_wrapper, self.layer_name)
+
+        with recorder:
+            for batch in dataloader:
+                labels = batch['label']
+                inputs = batch['input'].to(self.device)
+
+                # Forward pass to populate input activity
+                _ = self.model(inputs)
+                input_activities = recorder.pop()[self.layer_name]
+
+                yield input_activities, labels
+
+    def __len__(self):
+        return (len(self.datasplit) + self.batch_size - 1) // self.batch_size
+
+
+class LayerInputHooks(HookContext):
+    """Records activity across the model"""
+    def __init__(self, model_wrapper, layer_name):
+        super().__init__(hook_handles={})
+
+        module = model_wrapper.module_dict[layer_name]
+
+        hook = module.register_forward_hook(
+                                            self.create_input_hook(layer_name)
+                                            )
+
+        self.hook_handles[layer_name] = hook
+        self.input_activity = {layer_name: None}
+
+    def create_input_hook(self, name):
+        def recording_hook(module, inputs, output):
+            if isinstance(inputs, tuple):
+                # this can be tensor or tuple
+                inputs = inputs[0]
+
+            self.input_activity[name] = output.detach().clone().cpu()
+
+        return recording_hook
+
+    def pop(self):
+        """Return activity, set local versions to None"""
+        outputs = self.input_activity.copy()
+
+        for key in self.input_activity:
+            self.input_activity[key] = None
+
+        return outputs

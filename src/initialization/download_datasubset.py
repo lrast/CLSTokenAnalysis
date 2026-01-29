@@ -1,4 +1,5 @@
 # Initialization script to download dataset subsets
+# Functional, but not pretty
 import json
 import sys
 
@@ -6,9 +7,10 @@ from datasets import load_dataset, Dataset, Image
 from pathlib import Path
 
 
-def download_stratified_image_subsets(dataset_id, samples_per_class=200,
-                                      splits=['train', 'test'],
+def download_stratified_image_subsets(dataset_id, samples_per_class=250,
+                                      splits=['train', 'validation'],
                                       split_mapping={'validation': 'test'},
+                                      split_train_to_val=0.2,
                                       output_dir='temp_dataset_subsample',
                                       seed=42
                                       ):
@@ -69,10 +71,17 @@ def download_stratified_image_subsets(dataset_id, samples_per_class=200,
 
         data_subset = data_subset.shuffle(seed=seed)
         data_subset = data_subset.cast_column("image", Image(decode=True))
+        data_subset = data_subset.class_encode_column("label")
 
-        data_subset.save_to_disk(base_dir / split_name)
+        if split == 'train' and split_train_to_val is not None:
+            split_subsets = data_subset.train_test_split(split_train_to_val,
+                                                         seed=seed,
+                                                         stratify_by_column="label")
+            split_subsets['train'].to_parquet(base_dir / 'train/data.parquet')
+            split_subsets['test'].to_parquet(base_dir / 'validation/data.parquet')
 
-    #return load_dataset('arrow', data_dir=base_dir, streaming=True)
+        else:
+            data_subset.to_parquet(base_dir / split_name / 'data.parquet')
 
 
 # Running script. To do: more featured args parser

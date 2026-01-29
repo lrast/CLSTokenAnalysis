@@ -7,6 +7,10 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import RandomizedSearchCV
 from scipy.stats import expon
 
+import pytorch_lightning as pl
+from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+
 
 def fit_probes_by_ridge_regression(model_wrapper, activity_dataset, inds,
                                    internal_dim=768, num_classes=1000):
@@ -53,3 +57,68 @@ def fit_probes_by_ridge_regression(model_wrapper, activity_dataset, inds,
         probes[layer] = probe
 
     return probes
+
+
+def train_frozen_cls_token_probe(
+                                 model,
+                                 train_dataloader,
+                                 val_dataloader,
+                                 max_epochs=10,
+                                 patience=5,
+                                 accelerator="auto",
+                                 devices="auto",
+                                 **trainer_kwargs
+                                 ):
+    """
+    Trains a FrozenCLSTokenProbe using pytorch_lightning. Early stops on validation loss.
+    Loads the best model weights at the end. Logs to wandb if a wandb_logger is provided.
+
+    Args:
+        model: An instance of FrozenCLSTokenProbe (must inherit from pl.LightningModule).
+        train_dataloader: PyTorch DataLoader for training set.
+        val_dataloader: PyTorch DataLoader for validation set.
+        max_epochs: Maximum epochs to train.
+        patience: Patience for early stopping on val_loss.
+        accelerator: Accelerator for training ("cpu", "gpu", "auto", etc.).
+        devices: Devices specification ("auto", int, etc.).
+        **trainer_kwargs: Additional kwargs for Trainer.
+    Returns:
+        Trained (best weights) model.
+    """
+
+    # Early stopping on validation loss
+    early_stop_cb = EarlyStopping(
+        monitor="val/accuracy",
+        patience=patience,
+        verbose=True,
+        mode="max"
+    )
+
+    # ModelCheckpoint to save the best model
+    checkpoint_cb = ModelCheckpoint(
+        monitor="val/accuracy",
+        save_top_k=1,
+        mode="max",
+        save_last=True,
+        filename="best"
+    )
+
+    wandb_logger = WandbLogger(project="middle_decoders", log_model=True)
+
+    trainer = pl.Trainer(
+        max_epochs=max_epochs,
+        logger=wandb_logger,
+        callbacks=[early_stop_cb, checkpoint_cb],
+        accelerator=accelerator,
+        devices=devices,
+        **trainer_kwargs,
+    )
+
+    trainer.fit(model, train_dataloader, val_dataloader)
+
+    # Load the best checkpoint, if available
+    best_model_path = checkpoint_cb.best_model_path
+    if best_model_path:
+        model = type(model).load_from_checkpoint(best_model_path)
+
+    return model

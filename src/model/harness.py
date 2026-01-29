@@ -1,8 +1,9 @@
 # model wrapper class for generalizable evaluations
-from transformers import AutoModelForImageClassification, ViTForImageClassification
-
 import torch
 import json
+
+from transformers import AutoModelForImageClassification, ViTForImageClassification
+from src.utilities import HookContext
 
 
 class ModelWrapper():
@@ -61,11 +62,11 @@ class ModelWrapper():
         self.cached_activity = {layer: None for layer in tracked_layers}
 
         # initialize hooks
-        handles = []
+        handles = {}
         for layer in tracked_layers:
-            handles.append(self.add_activity_hook(layer, readout_functions[layer],
-                                                  randomizers[layer]
-                                                  ))
+            handles[layer] = self.add_activity_hook(layer, readout_functions[layer],
+                                                    randomizers[layer]
+                                                    )
 
         return HookContext(handles)
 
@@ -136,35 +137,11 @@ class ModelWrapper():
 
             hook_handle = self.module_dict[''].register_forward_hook(redefine_outputs)
 
-        return HookContext(hook_handle)
+        return HookContext({'zero_aux': hook_handle})
 
     def to(self, device):
         """Moves model to the specified device"""
         self.model = self.model.to(device)
-
-
-class HookContext:
-    """ Context that clears hook when it is done """
-    def __init__(self, *hook_handles):
-        self.hook_handles = hook_handles
-
-    def cleanup(self):
-        """Explicitly remove the hook. Should be called when done."""
-        for handle in self.hook_handles:
-            handle.remove()
-
-    def __enter__(self):
-        """Context manager entry"""
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit - cleanup the hook"""
-        self.cleanup()
-        return False
-
-    def __del__(self):
-        """Cleanup the hook as fallback"""
-        self.cleanup()
 
 
 # utilities for modelling

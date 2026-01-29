@@ -1,4 +1,8 @@
 # analyze causality and decodability in a trained model
+
+## OLD: marked for deletion
+
+
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
@@ -6,7 +10,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 
 
-from analysis import classification_stats
+from src.analysis.analysis import classification_stats
 
 from analysis import create_cls_embedding_datasets
 
