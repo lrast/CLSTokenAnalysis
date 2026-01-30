@@ -1,11 +1,14 @@
 # Decoding models for specific layers, using random input tokens
 
 import torch
-from torch import nn
 import pytorch_lightning as pl
 
+from torch import nn
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from huggingface_hub import PyTorchModelHubMixin
 
-class FrozenCLSTokenProbe(pl.LightningModule):
+
+class ModuleSpecificDecoder(pl.LightningModule, PyTorchModelHubMixin):
     """
     Pytorch lightning module that:
     1. Generates CLS tokens using a CLS generator.
@@ -15,15 +18,15 @@ class FrozenCLSTokenProbe(pl.LightningModule):
     def __init__(
         self,
         base_module: nn.Module,             # The model layer to probe
-        output_dim: int = 1000,       # Number of output classes 
+        output_dim: int = 1000,             # Number of output classes 
         token_dim: int = 768,               # Dimension of individual tokens
         cls_token_idx: int = 0,             # Position of CLS token in sequence
-        freeze_base_module: bool = True,  # Whether to freeze the external model's params
-        lr: float = 1e-3
+        lr: float = 1e-3,
+        device: str = None
     ):
         super().__init__()
 
-        self.base_module = [base_module]  # wrapped in a list to prevent it from being saved
+        self.base_module = [base_module]  # wrapped in a list to prevent saving
         self.cls_generator = CLSGenerator()
         self.probe = nn.Linear(token_dim, output_dim)
 
@@ -31,18 +34,22 @@ class FrozenCLSTokenProbe(pl.LightningModule):
         self.cls_token_idx = cls_token_idx
         self.lr = lr
 
-        if freeze_base_module:
-            for param in self.base_module[0].parameters():
-                param.requires_grad = False
-            self.base_module[0].eval()
+        # freeze the parameters of the base module
+        for param in self.base_module[0].parameters():
+            param.requires_grad = False
+        self.base_module[0].eval()
 
         self.save_hyperparameters(ignore=['base_module'])
 
+        if device is not None:
+            self.to(device)
+
         self.loss_fn = nn.CrossEntropyLoss()
-    
+
     def replace_cls_token(self, input_tokens, new_cls_token):
         """
-        Replace the CLS token(s) in input_tokens (B, L, D) at cls_token_idx with new_cls_token (B, D)
+        Replace the CLS token(s) in input_tokens (B, L, D) at cls_token_idx
+        with new_cls_token (B, D)
         """
         input_tokens = input_tokens.clone()
         input_tokens[:, self.cls_token_idx, :] = new_cls_token
@@ -53,12 +60,11 @@ class FrozenCLSTokenProbe(pl.LightningModule):
         new_CLS = self.cls_generator.generate(batch_size)  # Shape: (B, D)
 
         modified = self.replace_cls_token(input_tokens, new_CLS)
-        with torch.no_grad():
-            out = self.base_module[0](modified)
-        if isinstance(out, tuple):  # Handle models that return (logits, ...)
-            out = out[0]
+        outputs = self.base_module[0](modified)
+        if isinstance(outputs, tuple):  # Handle models that return (logits, ...)
+            outputs = outputs[0]
 
-        cls_embedded = out[:, self.cls_token_idx, :]
+        cls_embedded = outputs[:, self.cls_token_idx, :]
 
         logits = self.probe(cls_embedded)
         return logits
@@ -85,7 +91,26 @@ class FrozenCLSTokenProbe(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        # T_max is the number of epochs to reach the minimum LR
+        scheduler = CosineAnnealingLR(optimizer, T_max=3*3125, eta_min=1e-6)
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+            },
+        }
+
+    def to(self, device_name):
+        """Also move the base module that we are conditioned on"""
+        self.base_module[0].to(device_name)
+        super().to(device_name)
+
+
+
+
 
 
 class CLSGenerator(pl.LightningModule):

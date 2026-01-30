@@ -63,7 +63,7 @@ def train_frozen_cls_token_probe(
                                  model,
                                  train_dataloader,
                                  val_dataloader,
-                                 max_epochs=10,
+                                 max_epochs=3,
                                  patience=5,
                                  accelerator="auto",
                                  devices="auto",

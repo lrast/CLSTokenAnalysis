@@ -165,11 +165,7 @@ class OnlineLayerInputDataset(IterableDataset):
         recorder = LayerInputHooks(self.model_wrapper, self.layer_name)
 
         with recorder, torch.no_grad():
-            i = 0
             for batch in dataloader:
-                i += 1
-                if i > 500:
-                    break
                 labels = batch['label']
                 inputs = batch['input'].to(self.device)
 
