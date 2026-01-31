@@ -4,7 +4,6 @@ import torch
 import pytorch_lightning as pl
 
 from torch import nn
-from torch.optim.lr_scheduler import CosineAnnealingLR
 from huggingface_hub import PyTorchModelHubMixin
 
 
@@ -15,36 +14,15 @@ class ModuleSpecificDecoder(pl.LightningModule, PyTorchModelHubMixin):
     2. Replaces CLS tokens in input, and runs them through a frozen module
     3. Uses a linear probe to classify the outputs.
     """
-    def __init__(
-        self,
-        base_module: nn.Module,             # The model layer to probe
-        output_dim: int = 1000,             # Number of output classes 
-        token_dim: int = 768,               # Dimension of individual tokens
-        cls_token_idx: int = 0,             # Position of CLS token in sequence
-        lr: float = 1e-3,
-        device: str = None
-    ):
+    def __init__(self, output_dim=1000, token_dim=768, cls_token_idx=0):
         super().__init__()
-
-        self.base_module = [base_module]  # wrapped in a list to prevent saving
         self.cls_generator = CLSGenerator()
         self.probe = nn.Linear(token_dim, output_dim)
-
-        self.output_dim = output_dim
         self.cls_token_idx = cls_token_idx
-        self.lr = lr
-
-        # freeze the parameters of the base module
-        for param in self.base_module[0].parameters():
-            param.requires_grad = False
-        self.base_module[0].eval()
-
-        self.save_hyperparameters(ignore=['base_module'])
-
-        if device is not None:
-            self.to(device)
 
         self.loss_fn = nn.CrossEntropyLoss()
+
+        self.save_hyperparameters()
 
     def replace_cls_token(self, input_tokens, new_cls_token):
         """
@@ -55,12 +33,12 @@ class ModuleSpecificDecoder(pl.LightningModule, PyTorchModelHubMixin):
         input_tokens[:, self.cls_token_idx, :] = new_cls_token
         return input_tokens
 
-    def forward(self, input_tokens):
-        batch_size = input_tokens.shape[0]
-        new_CLS = self.cls_generator.generate(batch_size)  # Shape: (B, D)
+    def forward(self, input_tokens, base_module):
+        new_CLS_tokens = self.cls_generator.generate(input_tokens.shape[0])
 
-        modified = self.replace_cls_token(input_tokens, new_CLS)
-        outputs = self.base_module[0](modified)
+        modified = self.replace_cls_token(input_tokens, new_CLS_tokens)
+
+        outputs = base_module(modified)
         if isinstance(outputs, tuple):  # Handle models that return (logits, ...)
             outputs = outputs[0]
 
@@ -68,49 +46,6 @@ class ModuleSpecificDecoder(pl.LightningModule, PyTorchModelHubMixin):
 
         logits = self.probe(cls_embedded)
         return logits
-
-    def training_step(self, batch, batch_idx):
-        """
-        Assumes batch = (input_tokens, targets)
-        - input_tokens: (B, L, D) float tensor
-        - targets: (B,) class indices
-        """
-        input_tokens, targets = batch
-        logits = self.forward(input_tokens)
-        loss = self.loss_fn(logits, targets)
-        self.log("train/loss", loss)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        input_tokens, targets = batch
-        logits = self.forward(input_tokens)
-        loss = self.loss_fn(logits, targets)
-        acc = (logits.argmax(-1) == targets).float().mean()
-        self.log("val/loss", loss, prog_bar=True)
-        self.log("val/accuracy", acc, prog_bar=True)
-        return loss
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        # T_max is the number of epochs to reach the minimum LR
-        scheduler = CosineAnnealingLR(optimizer, T_max=3*3125, eta_min=1e-6)
-
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "step",
-            },
-        }
-
-    def to(self, device_name):
-        """Also move the base module that we are conditioned on"""
-        self.base_module[0].to(device_name)
-        super().to(device_name)
-
-
-
-
 
 
 class CLSGenerator(pl.LightningModule):
