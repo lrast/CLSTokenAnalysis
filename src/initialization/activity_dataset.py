@@ -199,7 +199,7 @@ class LayerInputHooks(HookContext):
                 # this can be tensor or tuple
                 inputs = inputs[0]
 
-            self.input_activity[name] = output.detach().clone().cpu()
+            self.input_activity[name] = inputs.detach().clone().cpu()
 
         return recording_hook
 

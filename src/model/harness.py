@@ -1,4 +1,5 @@
 # model wrapper class for generalizable evaluations
+from numpy import rad2deg
 import torch
 import json
 
@@ -47,15 +48,21 @@ class ModelWrapper():
     def get_classifier_module(self):
         return self.module_dict[self.CLS_classifier_name]
 
-    def add_internal_readouts(self, inds, readout_functions=None, randomizers=None):
+    def add_internal_readouts(self, readout_functions, randomizers=None,
+                              readout_method='straddle'):
         """ Initialize readout functions, hooks and trackers for multiple
-        radouts
+        readouts
 
-        readout_functions, randomizers: dictionaries indexed by layer namess
+        readout_functions, randomizers: dictionaries indexed by layer names
+        readout_method: how are the readouts attached to the original model?
         """
-        tracked_layers = [self.layers[i] for i in inds]
-        readout_functions = readout_functions or {layer: lambda x: x
-                                                  for layer in tracked_layers}
+        hook_adders = {'CLS_token': self.add_CLS_activity_hook,
+                       'straddle': self.add_straddle_hook
+                       }
+
+        add_hook = hook_adders[readout_method]
+
+        tracked_layers = readout_functions.keys()
         randomizers = randomizers or {layer: None for layer in tracked_layers}
 
         # create dictionary to track outputs
@@ -64,14 +71,15 @@ class ModelWrapper():
         # initialize hooks
         handles = {}
         for layer in tracked_layers:
-            handles[layer] = self.add_activity_hook(layer, readout_functions[layer],
-                                                    randomizers[layer]
-                                                    )
+            handles[layer] = add_hook(layer, readout_functions[layer],
+                                      randomizers[layer])
+
+        self.readouts = readout_functions
 
         return HookContext(handles)
 
-    def add_activity_hook(self, name, readout, randomizer):
-        """Hook that applys readout to activity and records the result
+    def add_CLS_activity_hook(self, name, readout, randomizer):
+        """Hook that applies readout to the CLS token activity and records the result
         """
         def record_readout_and_randomize(module, input, outputs):
             tuple_outs = isinstance(outputs, tuple)
@@ -94,6 +102,43 @@ class ModelWrapper():
                 return (to_return,)
             return to_return
 
+        hook_handle = self.module_dict[name].register_forward_hook(
+                                                    record_readout_and_randomize
+                                                )
+
+        return hook_handle
+
+    def add_straddle_hook(self, name, readout, randomizer):
+        """Hook in a model that straddles the module, modifying inputs
+        and probing outputs
+        """
+        def record_readout_and_randomize(module, inputs, outputs):
+            # track whether we are in the hook to prevent infinite loop on hook calls
+            if module._in_hook:
+                return
+
+            module._in_hook = True
+            try:
+                if isinstance(inputs, tuple):
+                    inputs = inputs[0]
+
+                inputs = inputs.detach().clone()
+
+                # record readouts
+                with torch.no_grad():
+                    self.cached_activity[name] = readout.forward(inputs, module)
+
+                if randomizer is None:
+                    return None
+                else:
+                    if isinstance(outputs, tuple):
+                        return (randomizer(outputs[0]),)
+                    else:
+                        return outputs
+            finally:
+                module._in_hook = False
+
+        self.module_dict[name]._in_hook = False
         hook_handle = self.module_dict[name].register_forward_hook(
                                                     record_readout_and_randomize
                                                 )
@@ -140,8 +185,11 @@ class ModelWrapper():
         return HookContext({'zero_aux': hook_handle})
 
     def to(self, device):
-        """Moves model to the specified device"""
+        """Moves model and probes to the specified device"""
         self.model = self.model.to(device)
+        if hasattr(self, 'readouts'):
+            for name, model in self.readouts.items():
+                model.to(device)
 
 
 # utilities for modelling
