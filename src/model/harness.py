@@ -1,5 +1,4 @@
 # model wrapper class for generalizable evaluations
-from numpy import rad2deg
 import torch
 import json
 
@@ -78,6 +77,34 @@ class ModelWrapper():
 
         return HookContext(handles)
 
+    def initialize_joint_readout(self, layer_names, multiple_readout):
+        """Initializer for a readout function that acts on the readouts from
+        multiple layers at ones 
+        """
+        self.cached_activity = {layer: None for layer in layer_names}
+
+        # add a recording hook for all of the layers that we care about
+        def hook_attacher(name):
+            def input_recording_hook(module, inputs, output):
+                if isinstance(inputs, tuple):
+                    inputs = inputs[0]
+
+                inputs = inputs.detach().clone()
+                self.cached_activity[name] = inputs
+
+            hook_handle = self.module_dict[name].register_forward_hook(
+                                                            input_recording_hook
+                                                    )
+            return hook_handle
+
+        hooks_context = HookContext({name: hook_attacher(name) for name in layer_names})
+
+        # set up the post readout
+
+        self.post_readout = multiple_readout
+
+        return hooks_context
+
     def add_CLS_activity_hook(self, name, readout, randomizer):
         """Hook that applies readout to the CLS token activity and records the result
         """
@@ -154,6 +181,19 @@ class ModelWrapper():
             self.cached_activity[layer] = None
 
         return outputs
+
+    def get_joint_readout(self):
+        """Post-process the readouts from a joint readout model"""
+        outputs = {module_name: (inputs, self.module_dict[module_name])
+                   for module_name, inputs in self.cached_activity.copy().items()
+                   }
+
+        values = self.post_readout.forward(outputs)
+
+        for layer in self.cached_activity.keys():
+            self.cached_activity[layer] = None
+
+        return values
 
     def zero_out_auxiliary_outputs(self):
         """Handle zeroing out non-CLS inputs to the final output layer in

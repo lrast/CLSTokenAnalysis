@@ -140,13 +140,13 @@ def generate_layer_input_datase(model_wrapper, layer_name, dataset_dict,
 
 class OnlineLayerInputDataset(IterableDataset):
     """
-    Iterable dataset that yields (input_activities, targets) from a model layer,
-    computed on the fly rather than stored to disk.
+    Iterable dataset that yields {layer_name: input_activities, label: targets}
+    from model layers, computed on the fly rather than stored to disk.
     """
-    def __init__(self, model_wrapper, layer_name, datasplit, batch_size=64,
+    def __init__(self, model_wrapper, layer_names, datasplit, batch_size=64,
                  device=None):
         self.model_wrapper = model_wrapper
-        self.layer_name = layer_name
+        self.layer_names = layer_names
         self.datasplit = datasplit
         self.batch_size = batch_size
         self.device = device
@@ -162,7 +162,7 @@ class OnlineLayerInputDataset(IterableDataset):
             shuffle=False,
             collate_fn=getattr(self.datasplit, 'collate_fn', None)
         )
-        recorder = LayerInputHooks(self.model_wrapper, self.layer_name)
+        recorder = LayerInputHooks(self.model_wrapper, self.layer_names)
 
         with recorder, torch.no_grad():
             for batch in dataloader:
@@ -171,9 +171,9 @@ class OnlineLayerInputDataset(IterableDataset):
 
                 # Forward pass to populate input activity
                 _ = self.model(inputs)
-                input_activities = recorder.pop()[self.layer_name]
-
-                yield input_activities, labels
+                return_values = recorder.pop()
+                return_values['label'] = labels
+                yield return_values
 
     def __len__(self):
         return (len(self.datasplit) + self.batch_size - 1) // self.batch_size
@@ -181,17 +181,23 @@ class OnlineLayerInputDataset(IterableDataset):
 
 class LayerInputHooks(HookContext):
     """Records activity across the model"""
-    def __init__(self, model_wrapper, layer_name):
+    def __init__(self, model_wrapper, layer_names):
         super().__init__(hook_handles={})
 
-        module = model_wrapper.module_dict[layer_name]
+        if isinstance(layer_names, str):
+            layer_names = [layer_names]
 
-        hook = module.register_forward_hook(
-                                            self.create_input_hook(layer_name)
-                                            )
+        self.input_activity = {}
 
-        self.hook_handles[layer_name] = hook
-        self.input_activity = {layer_name: None}
+        for layer_name in layer_names:
+            module = model_wrapper.module_dict[layer_name]
+
+            hook = module.register_forward_hook(
+                                                self.create_input_hook(layer_name)
+                                                )
+
+            self.hook_handles[layer_name] = hook
+            self.input_activity[layer_name] = None
 
     def create_input_hook(self, name):
         def recording_hook(module, inputs, output):

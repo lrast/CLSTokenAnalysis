@@ -1,6 +1,7 @@
 # training steps for intermediate decoders
 
 import torch
+import wandb
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from sklearn.linear_model import Ridge
@@ -13,7 +14,7 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
 
 
-def train_module_decoder(decoder_model, base_module,
+def train_module_decoder(decoder_model, base_modules,
                          train_dataloader, val_dataloader,
                          max_epochs=3, patience=5,
                          accelerator="auto", devices="auto",
@@ -24,7 +25,7 @@ def train_module_decoder(decoder_model, base_module,
 
     Args:
         decoder_model: An ModuleSpecificDecoder instance
-        base_module: The module that it is decoding
+        base_modules: The modules that are being decoded
         train_dataloader: PyTorch DataLoader for training set.
         val_dataloader: PyTorch DataLoader for validation set.
         max_epochs: Maximum epochs to train.
@@ -66,7 +67,7 @@ def train_module_decoder(decoder_model, base_module,
         **trainer_kwargs,
     )
 
-    trainer_model = TrainingWrapper_Decoder(decoder_model, base_module)
+    trainer_model = TrainingWrapper_Decoder(decoder_model, base_modules, num_epochs=max_epochs)
 
     trainer.fit(trainer_model, train_dataloader, val_dataloader)
 
@@ -74,6 +75,8 @@ def train_module_decoder(decoder_model, base_module,
     best_model_path = checkpoint_cb.best_model_path
     if best_model_path:
         decoder_model = type(decoder_model).load_from_checkpoint(best_model_path)
+
+    wandb.finish()
 
     return decoder_model
 
@@ -83,20 +86,38 @@ class TrainingWrapper_Decoder(pl.LightningModule):
 
         Manages base_module dependence, training hyperparameters
     """
-    def __init__(self, decoder=None, base_module=None, lr=1E-3):
+    def __init__(self, decoder=None, base_modules=None, lr=1E-3, num_epochs=3):
         super().__init__()
         self.decoder = decoder
-        self.base_module = base_module
+        self.base_modules = base_modules
         self.lr = lr
+        self.num_epochs = num_epochs
+
+        # Are we decoding single layers or multiple layers?
+        self.multiple_decoder = isinstance(base_modules, dict)
+
+        if self.multiple_decoder:
+            to_freeze = self.base_modules.values()
+        else:
+            to_freeze = [self.base_modules]
 
         # freeze the parameters of the base module
-        for param in self.base_module.parameters():
-            param.requires_grad = False
+        for module in to_freeze:
+            for param in module.parameters():
+                param.requires_grad = False
 
-        self.base_module.eval()
+            module.eval()
 
     def forward(self, input_tokens):
-        return self.decoder.forward(input_tokens, self.base_module)
+        if not self.multiple_decoder:
+            # the module is a single decoder module
+            inputs = list(input_tokens.items())[0][1]
+            return self.decoder.forward(inputs, self.base_modules)
+        else:
+            input_module_pairs = {key: (input_tokens[key], self.base_modules[key])
+                                  for key in self.base_modules.keys()
+                                  }
+            return self.decoder.forward(input_module_pairs)
 
     def training_step(self, batch, batch_idx):
         """
@@ -104,14 +125,18 @@ class TrainingWrapper_Decoder(pl.LightningModule):
         - input_tokens: (B, L, D) float tensor
         - targets: (B,) class indices
         """
-        input_tokens, targets = batch
+        targets = batch.pop('label')
+        input_tokens = batch
+
         logits = self.forward(input_tokens)
         loss = self.decoder.loss_fn(logits, targets)
         self.log("train/loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        input_tokens, targets = batch
+        targets = batch.pop('label')
+        input_tokens = batch
+
         logits = self.forward(input_tokens)
         loss = self.decoder.loss_fn(logits, targets)
         acc = (logits.argmax(-1) == targets).float().mean()
@@ -122,7 +147,7 @@ class TrainingWrapper_Decoder(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         # T_max is the number of epochs to reach the minimum LR
-        scheduler = CosineAnnealingLR(optimizer, T_max=3*3125, eta_min=1e-6)
+        scheduler = CosineAnnealingLR(optimizer, T_max=self.num_epochs*3125, eta_min=1e-6)
 
         return {
             "optimizer": optimizer,
