@@ -14,11 +14,13 @@ class ModuleSpecificDecoder(pl.LightningModule, PyTorchModelHubMixin):
     2. Replaces CLS tokens in input, and runs them through a frozen module
     3. Uses a linear probe to classify the outputs.
     """
-    def __init__(self, output_dim=1000, token_dim=768, cls_token_idx=0):
+    def __init__(self, output_dim=1000, token_dim=768, cls_token_idx=0,
+                 replace_cls=True):
         super().__init__()
         self.cls_generator = CLSGenerator()
         self.probe = nn.Linear(token_dim, output_dim)
         self.cls_token_idx = cls_token_idx
+        self.replace_cls = replace_cls
 
         self.loss_fn = nn.CrossEntropyLoss()
 
@@ -30,6 +32,9 @@ class ModuleSpecificDecoder(pl.LightningModule, PyTorchModelHubMixin):
         with new_cls_token (B, D)
         """
         input_tokens = input_tokens.clone()
+        if not self.replace_cls:
+            return input_tokens
+
         input_tokens[:, self.cls_token_idx, :] = new_cls_token
         return input_tokens
 
@@ -129,10 +134,10 @@ class CLSGenerator(pl.LightningModule):
 
 
 class MLPProbe(nn.Module):
-    def __init__(self, input_dim, hidden_dim=512, output_dim=1000, num_layers=2, activation=nn.ReLU):
+    def __init__(self, input_dim, hidden_dim=512, output_dim=1000, num_layers=2,
+                 activation=nn.ReLU):
         """
-        MLPProbe is a multi-layer perceptron used as a probe for classification or regression tasks.
-
+        MLPProbe is a multi-layer perceptron used as a probe
         Args:
             input_dim (int): Size of each input sample.
             hidden_dim (int): Size of hidden layers.
