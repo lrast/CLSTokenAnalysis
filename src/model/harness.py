@@ -231,6 +231,8 @@ class ModelWrapper():
             for name, model in self.readouts.items():
                 model.to(device)
 
+        return self
+
 
 # utilities for modelling
 def shuffle_randomizer(batch):

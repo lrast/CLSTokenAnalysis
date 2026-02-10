@@ -2,6 +2,8 @@
 # Functional, but not pretty
 import json
 import sys
+import os
+import shutil
 
 from datasets import load_dataset, Dataset, Image
 from pathlib import Path
@@ -12,7 +14,8 @@ def download_stratified_image_subsets(dataset_id, samples_per_class=250,
                                       split_mapping={'validation': 'test'},
                                       split_train_to_val=0.2,
                                       output_dir='temp_dataset_subsample',
-                                      seed=42
+                                      seed=42,
+                                      in_RAM=True
                                       ):
     """Download and save a stratified sub-sampling of the dataset to produce
     class-balanced splits.
@@ -65,9 +68,17 @@ def download_stratified_image_subsets(dataset_id, samples_per_class=250,
         else:
             split_name = split
 
-        data_subset = Dataset.from_generator(generate_samples, keep_in_memory=True,
-                                             gen_kwargs={'split': split},
-                                             split=split_name)
+        if not in_RAM:
+            data_subset = Dataset.from_generator(generate_samples, keep_in_memory=True,
+                                                 gen_kwargs={'split': split},
+                                                 split=split_name)
+        else:
+            ram_cache_dir = "/dev/shm/hf_cache"
+            os.makedirs(ram_cache_dir, exist_ok=True)
+            data_subset = Dataset.from_generator(generate_samples, keep_in_memory=True,
+                                                 gen_kwargs={'split': split},
+                                                 split=split_name,
+                                                 cache_dir=ram_cache_dir)
 
         data_subset = data_subset.shuffle(seed=seed)
         data_subset = data_subset.cast_column("image", Image(decode=True))
@@ -82,6 +93,9 @@ def download_stratified_image_subsets(dataset_id, samples_per_class=250,
 
         else:
             data_subset.to_parquet(base_dir / split_name / 'data.parquet')
+
+        if in_RAM:
+            shutil.rmtree(ram_cache_dir)
 
 
 # Running script. To do: more featured args parser

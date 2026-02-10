@@ -15,12 +15,12 @@ class ModuleSpecificDecoder(pl.LightningModule, PyTorchModelHubMixin):
     3. Uses a linear probe to classify the outputs.
     """
     def __init__(self, output_dim=1000, token_dim=768, cls_token_idx=0,
-                 replace_cls=True):
+                 mode='replace'):
         super().__init__()
         self.cls_generator = CLSGenerator()
         self.probe = nn.Linear(token_dim, output_dim)
         self.cls_token_idx = cls_token_idx
-        self.replace_cls = replace_cls
+        self.mode = mode
 
         self.loss_fn = nn.CrossEntropyLoss()
 
@@ -32,11 +32,17 @@ class ModuleSpecificDecoder(pl.LightningModule, PyTorchModelHubMixin):
         with new_cls_token (B, D)
         """
         input_tokens = input_tokens.clone()
-        if not self.replace_cls:
-            return input_tokens
 
-        input_tokens[:, self.cls_token_idx, :] = new_cls_token
-        return input_tokens
+        match self.mode:
+            case 'null':
+                return input_tokens
+            case 'replace':
+                input_tokens[:, self.cls_token_idx, :] = new_cls_token
+                return input_tokens
+            case 'augment':
+                new_tokens = torch.concat([input_tokens, new_cls_token[:, None, :]],
+                                          dim=1)
+                return new_tokens
 
     def forward(self, input_tokens, base_module):
         new_CLS_tokens = self.cls_generator.generate(input_tokens.shape[0])
