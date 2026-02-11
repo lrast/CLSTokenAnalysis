@@ -16,7 +16,7 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, Learning
 
 def train_module_decoder(decoder_model, base_modules,
                          train_dataloader, val_dataloader,
-                         max_epochs=3, patience=5,
+                         max_epochs=5, patience=5,
                          accelerator="auto", devices="auto",
                          **trainer_kwargs):
     """
@@ -130,6 +130,7 @@ class TrainingWrapper_Decoder(pl.LightningModule):
 
         logits = self.forward(input_tokens)
         loss = self.decoder.loss_fn(logits, targets)
+
         self.log("train/loss", loss)
         return loss
 

@@ -1,12 +1,67 @@
 # Generate activity datasets for as sepcified model and dataset
 import torch
 
-from datasets import Dataset, IterableDataset, DatasetDict, load_from_disk
-from torch.utils.data import DataLoader
+from datasets import Dataset, DatasetDict, load_from_disk
+from torch.utils.data import DataLoader, IterableDataset
 
 from src.utilities import HookContext
 from pathlib import Path
 
+
+# Updated versions that aren't reliant on hooks
+
+class OnlineLayerInputDataset(IterableDataset):
+    """
+    Iterable dataset that yields {layer_name: input_activities, label: targets}
+    from model layers, computed on the fly rather than stored to disk.
+
+    Reformulated to remove all hooks
+    """
+    def __init__(self, model_wrapper, layer_names, datasplit, batch_size=64,
+                 device=None):
+        self.model_wrapper = model_wrapper
+
+        self.layers = {}
+        if isinstance(layer_names, str):  # wrap single layers in a list
+            layer_names = [layer_names]
+
+        for layer_name in layer_names:
+            self.layers[layer_name] = model_wrapper.layers.index(layer_name)
+
+        self.datasplit = datasplit
+        self.batch_size = batch_size
+        self.device = device
+
+        self.model = model_wrapper.model.to(device)
+
+    def __iter__(self):
+        dataloader = torch.utils.data.DataLoader(
+            self.datasplit,
+            batch_size=self.batch_size,
+            shuffle=False,
+            collate_fn=getattr(self.datasplit, 'collate_fn', None)
+        )
+
+        for batch in dataloader:
+            with torch.no_grad():
+                labels = batch['label']
+                inputs = batch['input'].to(self.device)
+
+                # Forward pass to populate input activity
+                outs = self.model.forward(inputs, output_hidden_states=True)
+
+                return_values = {name: outs.hidden_states[ind].detach()
+                                 for name, ind in self.layers.items()}
+                return_values['label'] = labels
+                del outs
+
+            yield return_values
+
+    def __len__(self):
+        return (len(self.datasplit) + self.batch_size - 1) // self.batch_size
+
+
+# the versions that use hooks are below
 
 def activity_generator(model=None, datasplit=None, recorder=None, batch_size=64):
     """Activity generator: iterates through the dataset yields recorded values
@@ -136,47 +191,6 @@ def generate_layer_input_datase(model_wrapper, layer_name, dataset_dict,
             data_subset.save_to_disk(Path(output_dir) / split)
 
     return load_from_disk(output_dir)
-
-
-class OnlineLayerInputDataset(IterableDataset):
-    """
-    Iterable dataset that yields {layer_name: input_activities, label: targets}
-    from model layers, computed on the fly rather than stored to disk.
-    """
-    def __init__(self, model_wrapper, layer_names, datasplit, batch_size=64,
-                 device=None):
-        self.model_wrapper = model_wrapper
-        self.layer_names = layer_names
-        self.datasplit = datasplit
-        self.batch_size = batch_size
-        self.device = device
-
-        self.model = model_wrapper.model.to(device)
-
-        self._state_dict = {}
-
-    def __iter__(self):
-        dataloader = torch.utils.data.DataLoader(
-            self.datasplit,
-            batch_size=self.batch_size,
-            shuffle=False,
-            collate_fn=getattr(self.datasplit, 'collate_fn', None)
-        )
-        recorder = LayerInputHooks(self.model_wrapper, self.layer_names)
-
-        with recorder, torch.no_grad():
-            for batch in dataloader:
-                labels = batch['label']
-                inputs = batch['input'].to(self.device)
-
-                # Forward pass to populate input activity
-                _ = self.model(inputs)
-                return_values = recorder.pop()
-                return_values['label'] = labels
-                yield return_values
-
-    def __len__(self):
-        return (len(self.datasplit) + self.batch_size - 1) // self.batch_size
 
 
 class LayerInputHooks(HookContext):

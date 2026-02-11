@@ -11,10 +11,10 @@ class ModelWrapper():
     standardized interface. Analyses should take a ModelWrapper.
     """
     def __init__(self, model_id, num_classes):
-        # model setup 
         self.model_id = model_id
 
-        constructor = AutoModelForImageClassification  # handle constructor edge cases
+        # handle constructor edge cases
+        constructor = AutoModelForImageClassification
         kwargs = {}
         if model_id == "facebook/vit-mae-base":
             constructor = ViTForImageClassification
@@ -28,10 +28,10 @@ class ModelWrapper():
                                                  **kwargs
                                                  )
 
+        # metadata setup
         with open('metadata.json', 'r') as f:
             metadata = json.load(f)['model'][model_id]
 
-        # metadata setup
         self.module_dict = {k: v for k, v in self.model.named_modules()}
 
         self.layers = [metadata['template'].format(ind=i)
@@ -47,157 +47,11 @@ class ModelWrapper():
     def get_classifier_module(self):
         return self.module_dict[self.CLS_classifier_name]
 
-    def add_internal_readouts(self, readout_functions, randomizers=None,
-                              readout_method='straddle'):
-        """ Initialize readout functions, hooks and trackers for multiple
-        readouts
-
-        readout_functions, randomizers: dictionaries indexed by layer names
-        readout_method: how are the readouts attached to the original model?
-        """
-        hook_adders = {'CLS_token': self.add_CLS_activity_hook,
-                       'straddle': self.add_straddle_hook
-                       }
-
-        add_hook = hook_adders[readout_method]
-
-        tracked_layers = readout_functions.keys()
-        randomizers = randomizers or {layer: None for layer in tracked_layers}
-
-        # create dictionary to track outputs
-        self.cached_activity = {layer: None for layer in tracked_layers}
-
-        # initialize hooks
-        handles = {}
-        for layer in tracked_layers:
-            handles[layer] = add_hook(layer, readout_functions[layer],
-                                      randomizers[layer])
-
-        self.readouts = readout_functions
-
-        return HookContext(handles)
-
-    def initialize_joint_readout(self, layer_names, multiple_readout):
-        """Initializer for a readout function that acts on the readouts from
-        multiple layers at ones 
-        """
-        self.cached_activity = {layer: None for layer in layer_names}
-
-        # add a recording hook for all of the layers that we care about
-        def hook_attacher(name):
-            def input_recording_hook(module, inputs, output):
-                if isinstance(inputs, tuple):
-                    inputs = inputs[0]
-
-                inputs = inputs.detach().clone()
-                self.cached_activity[name] = inputs
-
-            hook_handle = self.module_dict[name].register_forward_hook(
-                                                            input_recording_hook
-                                                    )
-            return hook_handle
-
-        hooks_context = HookContext({name: hook_attacher(name) for name in layer_names})
-
-        # set up the post readout
-
-        self.post_readout = multiple_readout
-
-        return hooks_context
-
-    def add_CLS_activity_hook(self, name, readout, randomizer):
-        """Hook that applies readout to the CLS token activity and records the result
-        """
-        def record_readout_and_randomize(module, input, outputs):
-            tuple_outs = isinstance(outputs, tuple)
-            if tuple_outs:
-                outputs = outputs[0]
-
-            outputs = outputs.detach().clone()
-
-            # record readouts
-            cls_tokens = outputs[:, 0, :].cpu()
-            with torch.no_grad():
-                self.cached_activity[name] = readout(cls_tokens).cpu()
-
-            if randomizer is None:
-                to_return = outputs
-            else:
-                to_return = randomizer(outputs)
-
-            if tuple_outs:
-                return (to_return,)
-            return to_return
-
-        hook_handle = self.module_dict[name].register_forward_hook(
-                                                    record_readout_and_randomize
-                                                )
-
-        return hook_handle
-
-    def add_straddle_hook(self, name, readout, randomizer):
-        """Hook in a model that straddles the module, modifying inputs
-        and probing outputs
-        """
-        def record_readout_and_randomize(module, inputs, outputs):
-            # track whether we are in the hook to prevent infinite loop on hook calls
-            if module._in_hook:
-                return
-
-            module._in_hook = True
-            try:
-                if isinstance(inputs, tuple):
-                    inputs = inputs[0]
-
-                inputs = inputs.detach().clone()
-
-                # record readouts
-                with torch.no_grad():
-                    self.cached_activity[name] = readout.forward(inputs, module)
-
-                if randomizer is None:
-                    return None
-                else:
-                    if isinstance(outputs, tuple):
-                        return (randomizer(outputs[0]),)
-                    else:
-                        return outputs
-            finally:
-                module._in_hook = False
-
-        self.module_dict[name]._in_hook = False
-        hook_handle = self.module_dict[name].register_forward_hook(
-                                                    record_readout_and_randomize
-                                                )
-
-        return hook_handle
-
-    def get_batch_readout(self):
-        """ Returns batch read-outs and resets the tracker for safety
-        """
-        outputs = self.cached_activity.copy()
-
-        for layer in self.cached_activity.keys():
-            self.cached_activity[layer] = None
-
-        return outputs
-
-    def get_joint_readout(self):
-        """Post-process the readouts from a joint readout model"""
-        outputs = {module_name: (inputs, self.module_dict[module_name])
-                   for module_name, inputs in self.cached_activity.copy().items()
-                   }
-
-        values = self.post_readout.forward(outputs)
-
-        for layer in self.cached_activity.keys():
-            self.cached_activity[layer] = None
-
-        return values
-
     def zero_out_auxiliary_outputs(self):
         """Handle zeroing out non-CLS inputs to the final output layer in
-        a model dependent way
+        a model dependent way.
+
+        Used for experiments that probe CLS readouts alone
         """
         if self.model_id == "facebook/dinov2-base":
             # dinov2 appends the CLS tokens and mean outputs as inputs to the classifier
@@ -224,6 +78,11 @@ class ModelWrapper():
 
         return HookContext({'zero_aux': hook_handle})
 
+    # device management functions for the wrapper
+
+    def device(self):
+        return self.model.device
+
     def to(self, device):
         """Moves model and probes to the specified device"""
         self.model = self.model.to(device)
@@ -232,6 +91,12 @@ class ModelWrapper():
                 model.to(device)
 
         return self
+
+    def forward_with_readouts(self, layers_to_readout, readout_inputs=True,
+                              return_readouts=True):
+        """Intermediate readouts from the model. Purely passive, no hooks
+        """
+        pass
 
 
 # utilities for modelling
