@@ -39,7 +39,7 @@ def train_probes(mode, device='mps'):
         base_module = model_analysis.module_dict[layer_name]
 
         model_out = train_module_decoder(probe, base_module, ds_train, ds_validation)
-        model_out.save_pretrained(f'layer{i}_probe_{mode}')
+        model_out.save_pretrained(f'outs_{mode}/layer{i}_probe_{mode}')
 
 
 if __name__ == '__main__':
