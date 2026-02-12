@@ -40,7 +40,9 @@ class ModuleSpecificDecoder(pl.LightningModule, PyTorchModelHubMixin):
                 input_tokens[:, self.cls_token_idx, :] = new_cls_token
                 return input_tokens
             case 'augment':
-                new_tokens = torch.concat([input_tokens, new_cls_token[:, None, :]],
+                if self.cls_token_idx != 0:
+                    raise NotImplementedError('Augmentation at non-zero index')
+                new_tokens = torch.concat([new_cls_token[:, None, :], input_tokens],
                                           dim=1)
                 return new_tokens
 

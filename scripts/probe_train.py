@@ -7,7 +7,7 @@ from src.model.CLS_token_probing import ModuleSpecificDecoder
 from src.train.middle_decoders import train_module_decoder
 
 
-def train_probes(mode, device='mps'):
+def train_probes(mode, device='cuda'):
     """ create the training probes  """
     model_name = "facebook/dinov2-base"
     dataset_name = "temp_dataset_subsample"
@@ -17,7 +17,7 @@ def train_probes(mode, device='mps'):
 
     # second copy of the model: used for e
     model_analysis, _, _ = image_model_setup(model_name, dataset_name, 1000)
-    model_analysis.to('mps')
+    model_analysis.to(device)
     model_analysis.model.eval()
 
     layer_inds = [10, 8, 9, 11]
