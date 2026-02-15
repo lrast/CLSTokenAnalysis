@@ -1,5 +1,6 @@
 # Training script for probes
 import sys
+import torch
 
 from src.model.setup import image_model_setup
 from src.data.activity_dataset import OnlineLayerInputDataset
@@ -9,6 +10,8 @@ from src.train.middle_decoders import train_module_decoder
 
 def train_probes(mode, device='cuda'):
     """ create the training probes  """
+    torch.set_float32_matmul_precision('high')
+
     model_name = "facebook/dinov2-base"
     dataset_name = "temp_dataset_subsample"
 
