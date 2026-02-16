@@ -15,9 +15,12 @@ class ModuleSpecificDecoder(pl.LightningModule, PyTorchModelHubMixin):
     3. Uses a linear probe to classify the outputs.
     """
     def __init__(self, output_dim=1000, token_dim=768, cls_token_idx=0,
-                 mode='replace'):
+                 mode='replace', generator_class=None):
         super().__init__()
-        self.cls_generator = CLSGenerator()
+        if generator_class is None:  # default that is correctly hoisted
+            generator_class = CLSGenerator
+
+        self.cls_generator = generator_class()
         self.probe = nn.Linear(token_dim, output_dim)
         self.cls_token_idx = cls_token_idx
         self.mode = mode
@@ -139,6 +142,17 @@ class CLSGenerator(pl.LightningModule):
         initial = torch.randn(batch_size, self.hparams.sample_dim, device=device)
 
         return self.forward(initial)
+
+
+class DeterministicCLSGenerator(pl.LightningModule):
+    def __init__(self, sample_dim=768) -> None:
+        super().__init__()
+        self.save_hyperparameters()
+
+        self.token = torch.nn.Parameter(torch.randn(sample_dim))
+
+    def generate(self, batch_size):
+        return self.token.repeat(batch_size, 1)
 
 
 class MLPProbe(nn.Module):
