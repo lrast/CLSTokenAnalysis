@@ -5,10 +5,15 @@ from src.model.harness import ModelWrapper
 from datasets import load_dataset
 
 
-def image_model_setup(model_id, dataset_id, num_classes):
+def image_model_setup(model_id, dataset_id, num_classes, full_dataset=None):
     """ Sets-up the model, dataset, and trainer for an image processing run
+
+        full_dataset: alternative to specifying dataset_id
     """
-    ds = load_dataset(dataset_id, streaming=True)
+    if full_dataset:
+        ds = full_dataset
+    else:
+        ds = load_dataset(dataset_id, streaming=True)
 
     model = ModelWrapper(model_id, num_classes)
 
