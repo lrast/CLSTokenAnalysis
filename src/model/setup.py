@@ -30,6 +30,26 @@ def image_model_setup(model_id, dataset_id, num_classes, full_dataset=None):
     return model, ds, data_collator
 
 
+def load_processed_dataset(model_id, dataset_id, full_dataset=None):
+    """ loads the requested dataset with the appropriate processing 
+    for the given model
+    """
+    if full_dataset:
+        ds = full_dataset
+    else:
+        ds = load_dataset(dataset_id, streaming=True)
+
+    processor = AutoImageProcessor.from_pretrained(model_id, use_fast=True)
+
+    ds = ds.map(
+                transform_images, 
+                batched=True, 
+                fn_kwargs={"processor": processor, "output_name": "input"},
+                remove_columns=["image"]
+                )
+
+    return ds
+
 # general picklable transformations
 def transform_images(batch, processor=None, output_name="input"):
     """General parallalizable image transform"""

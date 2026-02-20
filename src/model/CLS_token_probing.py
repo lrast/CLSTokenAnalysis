@@ -7,6 +7,59 @@ from torch import nn
 from huggingface_hub import PyTorchModelHubMixin
 
 
+class SimpleReadOutAttachment(pl.LightningModule, PyTorchModelHubMixin):
+    """Class in charge of attaching internal readouts to the backbone model
+    Single layer readout with no additional loss
+    """
+    def __init__(self, layer_ind, internal_loss_weight=0.0, **decoderKwargs):
+        super().__init__()
+        self.layer_ind = layer_ind
+        self.decoder = ModuleSpecificDecoder(**decoderKwargs)
+        self.classification_loss = torch.nn.CrossEntropyLoss()
+
+    def setup(self, parent_layers):
+        self.base_layer = parent_layers[self.layer_ind]
+
+    def forward(self, hidden_states, labels=None):
+        model_input = hidden_states[self.layer_ind]
+        readouts = self.decoder.forward(model_input, self.base_layer)
+
+        if labels is None:
+            return readouts
+
+        classification_loss = self.classification_loss(readouts, labels)
+        return readouts, classification_loss
+
+
+class SelfCalibratingReadout(pl.LightningModule, PyTorchModelHubMixin):
+    """Class in charge of attaching internal readouts to the backbone model
+    Addition loss for mis-calibration in predictions
+
+    TODO: Needs to be implemented 
+    """
+    def __init__(self, layer_ind, internal_loss_weight=0.0):
+        super().__init__()
+        self.layer_ind = layer_ind
+        self.decoder = ModuleSpecificDecoder()
+
+        self.internal_loss = None
+        self.classification_loss = torch.nn.CrossEntropyLoss()
+
+    def setup(self, parent_layers):
+        self.base_layer = parent_layers[self.layer_ind]
+
+    def forward(self, hidden_states, labels=None):
+        model_input = hidden_states[self.layer_ind]
+        readouts = self.decoder.forward(model_input)
+
+        if labels is None:
+            return readouts
+
+        classification_loss = self.classification_loss(readouts, labels)
+        internal_loss = self.internal_loss(readouts)
+        return readouts, classification_loss + internal_loss
+
+
 class ModuleSpecificDecoder(pl.LightningModule, PyTorchModelHubMixin):
     """
     Pytorch lightning module that:
@@ -128,7 +181,6 @@ class CLSGenerator(pl.LightningModule):
         input_dim = sample_dim
         for i in range(num_layers):
             layers.append(nn.Linear(input_dim, hidden_dim))
-            layers.append(nn.BatchNorm1d(hidden_dim))
             layers.append(nn.LeakyReLU())
             input_dim = hidden_dim
         layers.append(nn.Linear(hidden_dim, output_dim))

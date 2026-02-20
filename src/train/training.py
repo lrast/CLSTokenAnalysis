@@ -1,5 +1,6 @@
 import evaluate
 import torch
+import wandb
 import numpy as np
 
 from transformers import TrainingArguments, Trainer
@@ -9,6 +10,66 @@ from sklearn.linear_model import Ridge
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import RandomizedSearchCV
 from scipy.stats import expon
+
+import pytorch_lightning as pl
+from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
+
+
+def train_readout(model, train_dataloader, val_dataloader, patience=5,
+                  accelerator="auto", devices="auto",
+                  **trainer_kwargs):
+    """
+    Trains a the readout portion of the model using pytorch_lightning.
+    Loads the best model weights at the end.
+    """
+
+    model.freeze_backbone()
+
+    # Early stopping on validation loss
+    early_stop_cb = EarlyStopping(
+        monitor="val/accuracy",
+        patience=patience,
+        verbose=True,
+        mode="max"
+    )
+
+    # ModelCheckpoint to save the best model
+    checkpoint_cb = ModelCheckpoint(
+        monitor="val/accuracy",
+        save_top_k=1,
+        mode="max",
+        save_last=True,
+        filename="best"
+    )
+
+    lr_monitor = LearningRateMonitor(logging_interval='step')
+
+    wandb_logger = WandbLogger(project="middle_decoders", log_model=True)
+
+    trainer = pl.Trainer(
+        max_epochs=model.train_cfg.epochs,
+        logger=wandb_logger,
+        callbacks=[early_stop_cb, checkpoint_cb, lr_monitor],
+        accelerator=accelerator,
+        devices=devices,
+        **trainer_kwargs,
+    )
+
+    trainer.fit(model, train_dataloader, val_dataloader)
+
+    # Load the best checkpoint, if available
+    best_model_path = checkpoint_cb.best_model_path
+    if best_model_path:
+        if model.readout is None:
+            #readout_model = type(model).load_from_checkpoint(best_model_path)
+            pass
+        else:
+            readout_model = type(model.readout).load_from_checkpoint(best_model_path)
+
+    wandb.finish()
+
+    return readout_model
 
 
 def run_probe_training(model, dataset, collator, **kwargs):
