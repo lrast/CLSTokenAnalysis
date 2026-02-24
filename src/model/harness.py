@@ -15,23 +15,37 @@ from dataclasses import dataclass
 class TrainConfig:
     epochs: int = 5
     steps_per_epoch: int = 3125
+
     max_lr: float = 1e-3
     pct_start: float = 0.05
     weight_decay: float = 0.0
+    backbone_eval: bool = True
+
+    save_readout_only: bool = True
+    readout_loss_weight: float = 0.0
 
 
 class ModelWrapper(pl.LightningModule):
     """ Wrapper around models to handle all edge cases and provide a 
-    standardized interface. Analyses should take a ModelWrapper.
+    standardized interface.
+
+    - Analyses should take a ModelWrapper.
+
+    - Also a parent object that all readouts can be trained an used from
+
+    Arguments:
+    model_id: backbone model
+    num_classes: readout dimension
+    readout_module: read-out attachment with setup, forward, and state_dict
+        arguments
+    train_cfg: a configuration dataclass as above
     """
-    def __init__(self, model_id, num_classes, readout_module=None, backbone_eval=True,
-                 train_cfg=TrainConfig
-                 ):
+    def __init__(self, model_id, num_classes, readout_module=None,
+                 train_cfg: TrainConfig = TrainConfig()):
         super().__init__()
 
         self.model_id = model_id
         self.train_cfg = train_cfg
-        self.backbone_eval = backbone_eval
 
         self.save_hyperparameters()
 
@@ -76,7 +90,9 @@ class ModelWrapper(pl.LightningModule):
     def add_readout(self, readout):
         self.readout = readout
         if readout is not None:
-            self.readout.setup([self.module_dict[l] for l in self.layers])
+            self.readout.setup([self.module_dict[l] for l in self.layers], 
+                               internal_loss_weight=self.train_cfg.readout_loss_weight
+                               )
 
     # core pytorch lightning functionality
     def forward(self, x, labels=None):
@@ -87,7 +103,7 @@ class ModelWrapper(pl.LightningModule):
             outs = self.model(x).logits
             if labels is not None:
                 loss = self.classification_loss(outs, labels)
-                return outs, loss
+                return loss, outs
             else:
                 return outs
         else:
@@ -101,7 +117,7 @@ class ModelWrapper(pl.LightningModule):
         inputs = batch['input']
         labels = batch['label']
 
-        outs, loss = self.forward(inputs, labels=labels)
+        loss, outs = self.forward(inputs, labels=labels)
 
         self.log('train/loss', loss)
         return loss
@@ -110,7 +126,7 @@ class ModelWrapper(pl.LightningModule):
         inputs = batch['input']
         labels = batch['label']
 
-        outs, loss = self.forward(inputs, labels=labels)
+        loss, outs = self.forward(inputs, labels=labels)
 
         preds = outs.argmax(dim=1)
         acc = (preds == labels).float().mean()
@@ -151,13 +167,19 @@ class ModelWrapper(pl.LightningModule):
         }
 
     def on_save_checkpoint(self, checkpoint):
-        """Save only the readout modules as checkpoints
+        """Checkpointing behavior 
         """
-        if self.readout is not None:
-            checkpoint['state_dict'] = self.readout.state_dict()
-        else:
-            # only save checkpoints for
-            pass
+        if self.train_cfg.save_readout_only:
+            # don't save the backbone, only the readout
+            if self.readout is None:
+                base_dict = self.model.state_dict()
+
+                state_dict = {k: v for k, v in base_dict.items()
+                              if k.split('.')[0] == self.CLS_classifier_name}
+            else:
+                state_dict = self.readout.state_dict()
+
+            checkpoint['state_dict'] = state_dict
 
     # utilities for enabling and disabling different parts of the model
     def zero_out_auxiliary_outputs(self):
@@ -207,7 +229,7 @@ class ModelWrapper(pl.LightningModule):
 
     def train(self, mode=True):
         super().train(mode)
-        if self.backbone_eval:  # always keep backbone in eval
+        if self.train_cfg.backbone_eval:  # keep backbone in eval while training
             self.model.eval()
         return self
 

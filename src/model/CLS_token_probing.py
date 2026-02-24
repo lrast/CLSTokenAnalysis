@@ -11,13 +11,18 @@ class SimpleReadOutAttachment(pl.LightningModule, PyTorchModelHubMixin):
     """Class in charge of attaching internal readouts to the backbone model
     Single layer readout with no additional loss
     """
-    def __init__(self, layer_ind, internal_loss_weight=0.0, **decoderKwargs):
+    def __init__(self, layer_ind, train_probe=True, **decoderKwargs):
         super().__init__()
         self.layer_ind = layer_ind
         self.decoder = ModuleSpecificDecoder(**decoderKwargs)
         self.classification_loss = torch.nn.CrossEntropyLoss()
 
-    def setup(self, parent_layers):
+        if not train_probe:
+            for parameter in self.decoder.probe.parameters():
+                parameter.requires_grad = False
+
+    def setup(self, parent_layers, internal_loss_weight=0.0):
+        self.internal_loss_weight = internal_loss_weight
         self.base_layer = parent_layers[self.layer_ind]
 
     def forward(self, hidden_states, labels=None):
@@ -28,7 +33,15 @@ class SimpleReadOutAttachment(pl.LightningModule, PyTorchModelHubMixin):
             return readouts
 
         classification_loss = self.classification_loss(readouts, labels)
-        return readouts, classification_loss
+        return classification_loss, readouts
+
+    def state_dict(self, destination=None, prefix='', keep_vars=False):
+        """ Do not include
+        """
+        decoder_dict = self.decoder.state_dict(destination=destination, prefix=prefix,
+                                               keep_vars=keep_vars)
+
+        return {'decoder.' + k: v for k, v in decoder_dict.items()}
 
 
 class SelfCalibratingReadout(pl.LightningModule, PyTorchModelHubMixin):
@@ -37,27 +50,7 @@ class SelfCalibratingReadout(pl.LightningModule, PyTorchModelHubMixin):
 
     TODO: Needs to be implemented 
     """
-    def __init__(self, layer_ind, internal_loss_weight=0.0):
-        super().__init__()
-        self.layer_ind = layer_ind
-        self.decoder = ModuleSpecificDecoder()
-
-        self.internal_loss = None
-        self.classification_loss = torch.nn.CrossEntropyLoss()
-
-    def setup(self, parent_layers):
-        self.base_layer = parent_layers[self.layer_ind]
-
-    def forward(self, hidden_states, labels=None):
-        model_input = hidden_states[self.layer_ind]
-        readouts = self.decoder.forward(model_input)
-
-        if labels is None:
-            return readouts
-
-        classification_loss = self.classification_loss(readouts, labels)
-        internal_loss = self.internal_loss(readouts)
-        return readouts, classification_loss + internal_loss
+    pass
 
 
 class ModuleSpecificDecoder(pl.LightningModule, PyTorchModelHubMixin):

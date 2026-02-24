@@ -16,7 +16,7 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
 
 
-def train_readout(model, train_dataloader, val_dataloader, patience=5,
+def train_readout(model, train_dataloader, val_dataloader, run_name, patience=5,
                   accelerator="auto", devices="auto",
                   **trainer_kwargs):
     """
@@ -25,6 +25,7 @@ def train_readout(model, train_dataloader, val_dataloader, patience=5,
     """
 
     model.freeze_backbone()
+    train_cfg = model.train_cfg
 
     # Early stopping on validation loss
     early_stop_cb = EarlyStopping(
@@ -45,10 +46,10 @@ def train_readout(model, train_dataloader, val_dataloader, patience=5,
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
 
-    wandb_logger = WandbLogger(project="middle_decoders", log_model=True)
+    wandb_logger = WandbLogger(project="middle_decoders")
 
     trainer = pl.Trainer(
-        max_epochs=model.train_cfg.epochs,
+        max_epochs=train_cfg.epochs,
         logger=wandb_logger,
         callbacks=[early_stop_cb, checkpoint_cb, lr_monitor],
         accelerator=accelerator,
@@ -58,18 +59,21 @@ def train_readout(model, train_dataloader, val_dataloader, patience=5,
 
     trainer.fit(model, train_dataloader, val_dataloader)
 
-    # Load the best checkpoint, if available
+    # Load the best checkpoint, save the final readout and the training configs
     best_model_path = checkpoint_cb.best_model_path
-    if best_model_path:
-        if model.readout is None:
-            #readout_model = type(model).load_from_checkpoint(best_model_path)
-            pass
-        else:
-            readout_model = type(model.readout).load_from_checkpoint(best_model_path)
+    ckpt = torch.load(best_model_path, weights_only=False)
+
+    if model.readout is None:
+        state_dict = {k: v for k, v in ckpt['state_dict'].items()
+                      if k.split('.')[0] == model.CLS_classifier_name}
+
+        model.model.save_pretrained(run_name + '/readout', state_dict=state_dict)
+
+    else:
+        model.readout.save_pretrained(run_name + '/readout',
+                                      state_dict=ckpt['state_dict'])
 
     wandb.finish()
-
-    return readout_model
 
 
 def run_probe_training(model, dataset, collator, **kwargs):
