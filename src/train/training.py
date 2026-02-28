@@ -37,20 +37,26 @@ def train_readout(model, train_dataloader, val_dataloader, run_name, patience=5,
 
     # ModelCheckpoint to save the best model
     checkpoint_cb = ModelCheckpoint(
-        monitor="val/accuracy",
-        save_top_k=1,
-        mode="max",
-        save_last=True,
-        filename="best"
+        dirpath='slow_temp_annealing_ckpt',
+        every_n_train_steps=200,
+        save_top_k=-1
+        #monitor="val/accuracy",
+        #save_top_k=1,
+        #mode="max",
+        #save_last=True,
+        #filename="best"
     )
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
 
     wandb_logger = WandbLogger(project="middle_decoders")
 
-    trainer = pl.Trainer(
+    trainer = pl.trainer.trainer.Trainer(
         max_epochs=train_cfg.epochs,
+        gradient_clip_val=train_cfg.gradient_clip_val,
+        gradient_clip_algorithm="value",
         logger=wandb_logger,
+        log_every_n_steps=50,
         callbacks=[early_stop_cb, checkpoint_cb, lr_monitor],
         accelerator=accelerator,
         devices=devices,

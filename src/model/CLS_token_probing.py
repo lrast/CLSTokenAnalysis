@@ -4,6 +4,7 @@ import torch
 import pytorch_lightning as pl
 
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 from huggingface_hub import PyTorchModelHubMixin
 
 
@@ -15,7 +16,7 @@ class SimpleReadOutAttachment(pl.LightningModule, PyTorchModelHubMixin):
         super().__init__()
         self.layer_ind = layer_ind
         self.decoder = ModuleSpecificDecoder(**decoderKwargs)
-        self.classification_loss = torch.nn.CrossEntropyLoss()
+        self.classification_loss = nn.CrossEntropyLoss()
 
         if not train_probe:
             for parameter in self.decoder.probe.parameters():
@@ -25,8 +26,8 @@ class SimpleReadOutAttachment(pl.LightningModule, PyTorchModelHubMixin):
         self.internal_loss_weight = internal_loss_weight
         self.base_layer = parent_layers[self.layer_ind]
 
-    def forward(self, hidden_states, labels=None):
-        model_input = hidden_states[self.layer_ind]
+    def forward(self, outputs, labels=None):
+        model_input = outputs.hidden_states[self.layer_ind].detach()
         readouts = self.decoder.forward(model_input, self.base_layer)
 
         if labels is None:
@@ -44,13 +45,117 @@ class SimpleReadOutAttachment(pl.LightningModule, PyTorchModelHubMixin):
         return {'decoder.' + k: v for k, v in decoder_dict.items()}
 
 
-class SelfCalibratingReadout(pl.LightningModule, PyTorchModelHubMixin):
-    """Class in charge of attaching internal readouts to the backbone model
-    Addition loss for mis-calibration in predictions
-
-    TODO: Needs to be implemented 
+class SecondaryReadouts(SimpleReadOutAttachment):
+    """ Secondary readout: trained to produce readouts similary to parent logits
+    This is a simplified version of the self-calibrating readouts to ensure that
+    the KL training doesn't chase itself.
     """
-    pass
+    def __init__(self, layer_ind, train_probe=True,
+                 num_samples=64, temperature=1.0, return_calibration_loss=False,
+                 **decoderKwargs):
+        super().__init__(layer_ind, train_probe, **decoderKwargs)
+        self.self_calibration_loss = nn.KLDivLoss(reduction='batchmean')
+        self.num_samples = num_samples
+        self.return_calibration_loss = return_calibration_loss
+        self.temperature = temperature
+        self.annealing_rate = (1-1/4000)
+        self.save_hyperparameters()
+
+    def update_temperature(self):
+        """ Temperature annealing every step """
+        self.temperature = max(0.1, self.temperature * self.annealing_rate)
+
+    def forward(self, outputs, labels=None):
+        model_input = outputs.hidden_states[self.layer_ind].detach()
+        parent_logits = outputs.logits.detach()
+
+        self.update_temperature()
+
+        # Sample multiple readouts.
+        # Uses checkpointing when training to prevent the memory graphs from blowing up
+        sampled_readouts = torch.stack([checkpoint(self.decoder.forward, model_input,
+                                                   self.base_layer, use_reentrant=False,
+                                                   preserve_rng_state=True)
+                                        for i in range(self.num_samples)
+                                        ])
+
+        # Self-calibration loss:
+        # note: targets are 'frequencies', predictions are logits
+        softmax_readouts = torch.softmax(sampled_readouts / self.temperature, dim=-1
+                                         ).mean(dim=0).clamp(1E-30)
+
+        #log_softmaxes = torch.log_softmax(sampled_readouts, dim=-1)  # [N, classes]
+        #log_mixture = torch.logsumexp(log_softmaxes, dim=0) - torch.log(torch.tensor(self.num_samples))
+
+        self_calibration_loss = self.self_calibration_loss(
+                                        torch.log_softmax(parent_logits, dim=-1),
+                                        softmax_readouts
+                                        )
+
+        # logging custom
+        shared_mass = (softmax_readouts * torch.softmax(parent_logits, dim=-1)
+                       ).sum(1).mean(0).item()
+
+        self.to_log = {'shared_mass': shared_mass, }
+
+        # using the self-calibration loss in later training.
+        return self.internal_loss_weight * self_calibration_loss, softmax_readouts
+
+
+class SelfCalibratingReadout(SimpleReadOutAttachment):
+    """Class in charge of attaching internal readouts to the backbone model
+
+    Addition loss for mis-calibration in predictions: aim to produce random answers that
+    1. Average to logit predictions
+    2. In soft-max, also average to logits!
+    """
+    def __init__(self, layer_ind, train_probe=True,
+                 num_samples=64, temperature=1.0, return_calibration_loss=False,
+                 **decoderKwargs):
+        super().__init__(layer_ind, train_probe, **decoderKwargs)
+        self.self_calibration_loss = nn.KLDivLoss(reduction='batchmean')
+        self.num_samples = num_samples
+        self.return_calibration_loss = return_calibration_loss
+        self.temperature = temperature
+        self.save_hyperparameters()
+
+    def forward(self, outputs, labels=None):
+        model_input = outputs.hidden_states[self.layer_ind].detach()
+
+        # Sample multiple readouts.
+        # Uses checkpointing when training to prevent the memory graphs from blowing up
+        sampled_readouts = torch.stack([checkpoint(self.decoder.forward, model_input,
+                                                   self.base_layer, use_reentrant=False,
+                                                   preserve_rng_state=True)
+                                        for i in range(self.num_samples)
+                                        ])
+
+        mean_readouts = sampled_readouts.mean(dim=0)
+
+        if labels is None and not self.return_calibration_loss:
+            return mean_readouts
+
+        # Self-calibration loss:
+        # note: targets are 'frequencies', predictions are logits
+        softmax_readouts = torch.softmax(sampled_readouts / self.temperature, dim=-1
+                                         ).mean(dim=0)
+        self_calibration_loss = self.self_calibration_loss(
+                                        torch.log_softmax(mean_readouts, dim=-1).clamp(min=-30),
+                                        softmax_readouts
+                                        )
+
+        # using the self-calibration loss in later training.
+        if labels is None:
+            return self.internal_loss_weight * self_calibration_loss, mean_readouts
+
+        classification_loss = self.classification_loss(mean_readouts, labels)
+
+        total_loss = classification_loss + self.internal_loss_weight * self_calibration_loss
+
+        # logging the classification loss here.
+        self.to_log = {'classification_loss': classification_loss.item()}
+
+        return total_loss, mean_readouts
 
 
 class ModuleSpecificDecoder(pl.LightningModule, PyTorchModelHubMixin):
@@ -174,6 +279,7 @@ class CLSGenerator(pl.LightningModule):
         input_dim = sample_dim
         for i in range(num_layers):
             layers.append(nn.Linear(input_dim, hidden_dim))
+            #layers.append(nn.BatchNorm1d(hidden_dim))
             layers.append(nn.LeakyReLU())
             input_dim = hidden_dim
         layers.append(nn.Linear(hidden_dim, output_dim))

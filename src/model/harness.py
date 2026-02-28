@@ -10,6 +10,8 @@ from src.utilities import HookContext
 from torch.optim.lr_scheduler import OneCycleLR
 from dataclasses import dataclass
 
+from lightning.pytorch.utilities import grad_norm
+
 
 @dataclass
 class TrainConfig:
@@ -23,6 +25,7 @@ class TrainConfig:
 
     save_readout_only: bool = True
     readout_loss_weight: float = 0.0
+    gradient_clip_val: float = None
 
 
 class ModelWrapper(pl.LightningModule):
@@ -108,7 +111,7 @@ class ModelWrapper(pl.LightningModule):
                 return outs
         else:
             base_outs = self.model(x, output_hidden_states=True)
-            return self.readout.forward(base_outs.hidden_states, labels=labels)
+            return self.readout.forward(base_outs, labels=labels)
 
     def training_step(self, batch, batch_idx):
         """
@@ -119,7 +122,14 @@ class ModelWrapper(pl.LightningModule):
 
         loss, outs = self.forward(inputs, labels=labels)
 
+        # utility for additional logging from the readout.
+        if self.readout is not None and hasattr(self.readout, 'to_log'):
+            self.log_dict({f'train/{key}': value for key, value in
+                          self.readout.to_log.items()})
+
         self.log('train/loss', loss)
+        self.log('debug/min', outs.min().item())
+        self.log('debug/max', outs.max().item())
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -146,12 +156,17 @@ class ModelWrapper(pl.LightningModule):
         self.log('test/accuracy', acc)
         return {'test_accuracy': acc}
 
+    def on_before_optimizer_step(self, optimizer):
+        """debug: gradient norm logging"""
+        norms = grad_norm(self, norm_type='inf')
+        self.log_dict(norms)
+
     def configure_optimizers(self):
         """Adam with cosine scheduling
         """
         lr = self.train_cfg.max_lr
 
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr / 25.)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=lr / 25.)
 
         scheduler = OneCycleLR(optimizer, epochs=self.train_cfg.epochs,
                                steps_per_epoch=self.train_cfg.steps_per_epoch,
@@ -215,12 +230,13 @@ class ModelWrapper(pl.LightningModule):
 
     def freeze_backbone(self, freeze_classifier=False):
         """ freeze the backbone a put it into eval mode """
-        for param in self.model.parameters():
-            param.requires_grad = False
-
-        if not freeze_classifier:
-            for params in self.get_classifier_module().parameters():
-                params.requires_grad = True
+        for name, param in self.model.named_parameters():
+            if ((not freeze_classifier) and
+               (name.split('.')[0] == self.CLS_classifier_name)):
+                # don't change anything inside the classifier
+                pass
+            else:
+                param.requires_grad = False
 
     def unfreeze_backbone(self):
         for param in self.model.parameters():
