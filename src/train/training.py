@@ -51,7 +51,7 @@ def train_readout(model, train_dataloader, val_dataloader, run_name, patience=5,
 
     wandb_logger = WandbLogger(project="middle_decoders")
 
-    trainer = pl.trainer.trainer.Trainer(
+    trainer = pl.Trainer(
         max_epochs=train_cfg.epochs,
         gradient_clip_val=train_cfg.gradient_clip_val,
         gradient_clip_algorithm="value",
